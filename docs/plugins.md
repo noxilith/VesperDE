@@ -9,7 +9,7 @@ A plugin does nothing until the user turns it on in *Settings > Plugins* (that a
 `plugins.enabled` in the config). **Plugins run with the user's own permissions**, so keep them readable and say
 what they do.
 
-The quickest start is the template: `templates/vesper-plugin-template` (published as its own repository).
+The quickest start is the template: `templates/vesper-plugin-template` (also published as its own repository: https://github.com/noxilith/VesperDE-Plugin-Template).
 
 ## plugin.toml
 

@@ -1,0 +1,7 @@
+[target.x86_64-unknown-linux-gnu]
+linker = "gcc"
+
+[build]
+# The workspace and file-manager/ (a separate project) share one target directory, so the compositor
+# finds its sibling binaries (vesper-bar, file-manager, ...) next to itself.
+target-dir = "target"

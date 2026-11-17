@@ -1,0 +1,2 @@
+# PAM service used by vesper-lock to check your password: the same as logging in on a console.
+auth    include    login

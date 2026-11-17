@@ -1,0 +1,41 @@
+#!/bin/sh
+# Entry point for a Vesper session. Display managers (SDDM, LightDM, ...) start it through vesper.desktop, and
+# you can run it from a console too. It sets up the login environment, makes sure a D-Bus session bus exists,
+# then starts the compositor.
+
+# A display manager starts us without your login environment (~/.profile, PATH additions, ...). Take it from
+# your login shell once, the way a console login would. Skipped when arguments are given (development use).
+if [ -z "${VESPER_LOGIN_ENV:-}" ] && [ "$#" -eq 0 ]; then
+    shell="${SHELL:-}"
+    self="$(command -v "$0" 2>/dev/null || echo "$0")"
+    if [ -n "$shell" ] && [ -x "$shell" ] && grep -qx "$shell" /etc/shells 2>/dev/null; then
+        case "$shell" in
+            *nologin* | *false*) ;;
+            *)
+                export VESPER_LOGIN_ENV=1
+                exec "$shell" -l -c "exec '$self'"
+                ;;
+        esac
+    fi
+fi
+
+export XDG_SESSION_TYPE=wayland
+export XDG_CURRENT_DESKTOP=Vesper
+export XDG_SESSION_DESKTOP=vesper
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+
+# Under a display manager there is no terminal; keep the session's output somewhere you can read it.
+if [ ! -t 1 ]; then
+    logdir="${XDG_STATE_HOME:-$HOME/.local/state}/vesper"
+    if mkdir -p "$logdir" 2>/dev/null; then
+        log="$logdir/session.log"
+        # keep it from growing forever: start over once it passes 1 MB
+        [ -f "$log" ] && [ "$(wc -c < "$log" 2>/dev/null || echo 0)" -gt 1048576 ] && : > "$log"
+        exec >>"$log" 2>&1
+    fi
+fi
+
+if [ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ] && command -v dbus-run-session >/dev/null 2>&1; then
+    exec dbus-run-session -- vesper --tty "$@"
+fi
+exec vesper --tty "$@"

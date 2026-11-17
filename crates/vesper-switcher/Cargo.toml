@@ -1,0 +1,17 @@
+[package]
+name = "vesper-switcher"
+description = "Vesper window switcher: Mod+Tab lists every window, Tab cycles, releasing Mod or Enter picks"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+vesper-config = { path = "../vesper-config" }
+vesper-gfx = { path = "../vesper-gfx" }
+vesper-apps = { path = "../vesper-apps" }
+vesper-ipc = { path = "../vesper-ipc" }
+serde_json = "1"
+anyhow = "1"
+tracing.workspace = true
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+smithay-client-toolkit = "0.20"

@@ -1,0 +1,2184 @@
+use std::path::PathBuf;
+
+use crate::i18n::{self, tr, tr_dyn, trf, Language};
+
+use eframe::egui::{self, Color32, CornerRadius, Pos2, Rect, Vec2};
+
+use crate::app::{app_row, FileManagerApp, ViewMode};
+use crate::fs::apps::{self, AppEntry};
+use crate::fs::file_item::{FileItem, ICON_SAMPLES};
+use crate::fs::scanner::{SortBy, SortOrder};
+use crate::keymap::{self, Action};
+use crate::settings::{default_menu_layout, CustomGroup, Density, MenuConfig, MenuKey, MenuKind, MenuNode, Settings, StartLocation, SubmenuId, GROUP_ICONS};
+use crate::ui::fonts::SystemFont;
+use crate::ui::icon_style::{self, IconStyle};
+use crate::ui::icons;
+use crate::ui::material::{self, button, chip, choice_row, filled_icon_button, group_card, nav_item_roving, switch_row_with, ButtonKind, Column};
+use crate::ui::theme::{self, SerpantinumTheme, ACCENTS};
+
+const CATEGORY_COUNT: i32 = 9;
+/// The widest the settings column grows in a wide window.
+const PAGE_WIDTH: f32 = 720.0;
+/// The category that lists the sidebar's places.
+pub(crate) const SIDEBAR_TAB: usize = 3;
+
+fn category_focus_id() -> egui::Id {
+    egui::Id::unique("set_cat_focus")
+}
+
+/// What the Settings window holds while it is open: the category and the state of its pages.
+pub(crate) struct SettingsState {
+    pub(crate) tab: usize,
+    font_query: String,
+    pub(crate) hex: String,
+    picking: Option<usize>,
+    defaults: Vec<Option<String>>,
+    keybind_search: String,
+    capture: Option<(Action, Option<usize>)>,
+    conflict_warning: Option<(String, Action, Action, Option<usize>)>,
+    /// The "Browse more themes" page of Appearance, open with its search text.
+    theme_browser: Option<String>,
+    /// The right-click menu the Context menu page shows.
+    menu_kind: MenuKind,
+    /// The form that makes or edits a submenu of the right-click menu, while it is open.
+    menu_form: Option<MenuForm>,
+}
+
+/// The categories in the order of the window's sidebar: the page number, its icon and its name.
+fn categories() -> [(usize, &'static str, &'static str); CATEGORY_COUNT as usize] {
+    [
+        (0, icons::COG, tr("General")),
+        (1, icons::TUNE, tr("Appearance")),
+        (2, icons::FOLDER_OPEN, tr("Files & View")),
+        (SIDEBAR_TAB, icons::SIDEBAR, tr("Sidebar")),
+        (4, icons::MORE, tr("Context menu")),
+        (5, icons::CURSOR, tr("Behavior")),
+        (6, icons::KEYBOARD, tr("Keybindings")),
+        (7, icons::APPS, tr("Applications")),
+        (8, icons::TEMPLATE, tr("Plugins")),
+    ]
+}
+
+type Layout = Vec<Vec<MenuNode>>;
+
+/// The form that makes a submenu or, for one made before, renames it and changes its icon.
+pub(crate) struct MenuForm {
+    /// The submenu being edited; `None` makes a new one.
+    editing: Option<u32>,
+    name: String,
+    icon: usize,
+    /// The entries a new submenu starts with.
+    picks: Vec<MenuKey>,
+}
+
+/// Takes away the submenus made here that were left with no entry, and their names.
+fn prune_custom(layout: &mut Layout, config: &mut MenuConfig) {
+    for group in layout.iter_mut() {
+        group.retain(|n| !matches!(n, MenuNode::Submenu(SubmenuId::Custom(_), keys) if keys.is_empty()));
+    }
+    let live: Vec<u32> = layout.iter().flatten().filter_map(|n| match n {
+        MenuNode::Submenu(SubmenuId::Custom(id), _) => Some(*id),
+        _ => None,
+    }).collect();
+    config.custom_groups.retain(|g| live.contains(&g.id));
+}
+
+/// What a drag in the menu editor carries: an entry, or a whole submenu.
+#[derive(Clone, Copy, PartialEq)]
+enum DragItem {
+    Entry(MenuKey),
+    Sub(SubmenuId),
+}
+
+/// A place in a menu's layout: at an index of a group, or at an index inside a submenu.
+#[derive(Clone, Copy, PartialEq)]
+enum Spot {
+    Top(usize, usize),
+    Inside(SubmenuId, usize),
+}
+
+/// A row being dragged and the place it would take.
+#[derive(Clone, Copy)]
+struct MenuDrag {
+    item: DragItem,
+    to: Spot,
+}
+
+fn menu_drag_id() -> egui::Id {
+    egui::Id::NULL.with("cm_drag")
+}
+
+fn is_item(node: &MenuNode, item: DragItem) -> bool {
+    match (node, item) {
+        (MenuNode::Entry(key), DragItem::Entry(other)) => *key == other,
+        (MenuNode::Submenu(id, _), DragItem::Sub(other)) => *id == other,
+        _ => false,
+    }
+}
+
+/// Where `item` is in `layout`.
+fn spot_of(layout: &Layout, item: DragItem) -> Option<Spot> {
+    for (g, group) in layout.iter().enumerate() {
+        if let Some(i) = group.iter().position(|n| is_item(n, item)) {
+            return Some(Spot::Top(g, i));
+        }
+        if let DragItem::Entry(key) = item {
+            for node in group {
+                if let MenuNode::Submenu(id, keys) = node
+                    && let Some(i) = keys.iter().position(|k| *k == key)
+                {
+                    return Some(Spot::Inside(*id, i));
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Takes `item` out of `layout`, from a group or from inside a submenu.
+fn take_item(layout: &mut Layout, item: DragItem) -> Option<MenuNode> {
+    for group in layout.iter_mut() {
+        if let Some(i) = group.iter().position(|n| is_item(n, item)) {
+            return Some(group.remove(i));
+        }
+        if let DragItem::Entry(key) = item {
+            for node in group.iter_mut() {
+                if let MenuNode::Submenu(_, keys) = node
+                    && let Some(i) = keys.iter().position(|k| *k == key)
+                {
+                    keys.remove(i);
+                    return Some(MenuNode::Entry(key));
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Puts a node taken out of `layout` at `spot`; a submenu cannot go into another, and ends up
+/// at the end of the last group instead.
+fn put_item(layout: &mut Layout, node: MenuNode, spot: Spot) {
+    let node = match (spot, node) {
+        (Spot::Top(g, i), node) if g < layout.len() => {
+            let group = &mut layout[g];
+            group.insert(i.min(group.len()), node);
+            return;
+        }
+        (Spot::Inside(id, i), MenuNode::Entry(key)) => {
+            for group in layout.iter_mut() {
+                for node in group.iter_mut() {
+                    if let MenuNode::Submenu(sid, keys) = node
+                        && *sid == id
+                    {
+                        keys.insert(i.min(keys.len()), key);
+                        return;
+                    }
+                }
+            }
+            MenuNode::Entry(key)
+        }
+        (_, node) => node,
+    };
+    if let Some(last) = layout.last_mut() {
+        last.push(node);
+    }
+}
+
+/// What the enabled plugins can add to a menu: each entry's key and the submenu it folds into.
+type PluginEntries = [(MenuKey, Option<&'static str>)];
+
+/// The saved arrangement of a menu with whatever it lacks of the app's own, which the app has
+/// gained since, in the place the app puts it; and with the entries of plugins that are enabled,
+/// and none of the plugins that are not. A plugin's entries have a group of their own, where the
+/// menu has them, and the plugin's submenus (Git, Tags) hold the entries that fold into them.
+fn complete_layout(kind: MenuKind, saved: &Layout, plugins: &PluginEntries) -> Layout {
+    let mut layout = if saved.is_empty() { default_menu_layout(kind) } else { saved.clone() };
+    if !saved.is_empty() {
+        for (g, group) in default_menu_layout(kind).iter().enumerate() {
+            for node in group {
+                let keys = match node {
+                    MenuNode::Entry(key) => vec![*key],
+                    MenuNode::Submenu(_, keys) => keys.clone(),
+                };
+                for key in keys {
+                    if spot_of(&layout, DragItem::Entry(key)).is_none() {
+                        let at = g.min(layout.len().saturating_sub(1));
+                        if let Some(group) = layout.get_mut(at) {
+                            group.push(MenuNode::Entry(key));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // Entries of plugins that are off go, and with them the plugin's submenus
+    let known = |key: &MenuKey| !matches!(key, MenuKey::Plugin(_)) || plugins.iter().any(|(k, _)| k == key);
+    for group in layout.iter_mut() {
+        group.retain_mut(|node| match node {
+            MenuNode::Entry(key) => known(key),
+            MenuNode::Submenu(id, keys) => {
+                keys.retain(known);
+                !keys.is_empty() || !matches!(id, SubmenuId::Group(_))
+            }
+        });
+    }
+    let is_plugins = |node: &MenuNode| match node {
+        MenuNode::Entry(key) => matches!(key, MenuKey::Plugin(_)),
+        MenuNode::Submenu(SubmenuId::Group(_), _) => true,
+        MenuNode::Submenu(..) => false,
+    };
+    for (key, group) in plugins {
+        if spot_of(&layout, DragItem::Entry(*key)).is_some() {
+            continue;
+        }
+        // The group the plugins' entries are in, or one made where the menu has them
+        let at = match layout.iter().position(|g| g.iter().any(is_plugins)) {
+            Some(at) => at,
+            None => {
+                let at = if kind == MenuKind::Background { 1.min(layout.len()) } else { layout.len().saturating_sub(1) };
+                layout.insert(at, Vec::new());
+                at
+            }
+        };
+        match group {
+            Some(name) => {
+                let id = SubmenuId::Group(crate::settings::PluginKey(name));
+                let found = layout.iter_mut().flatten().find_map(|n| match n {
+                    MenuNode::Submenu(sid, keys) if *sid == id => Some(keys),
+                    _ => None,
+                });
+                match found {
+                    Some(keys) => keys.push(*key),
+                    None => layout[at].push(MenuNode::Submenu(id, vec![*key])),
+                }
+            }
+            None => layout[at].push(MenuNode::Entry(*key)),
+        }
+    }
+    layout
+}
+
+/// A row of the menu editor as the menu paints its entries, with the eye that hides it at the right.
+#[allow(clippy::too_many_arguments)]
+fn paint_edit_row(painter: &egui::Painter, theme: &SerpantinumTheme, rect: egui::Rect, icon: &str, label: &str, chevron: bool, pencil: bool, eye: Option<bool>, shown: bool, fill: Option<egui::Color32>, fade: f32) {
+    if let Some(fill) = fill {
+        painter.rect_filled(rect, egui::CornerRadius::same(material::radius_lg()), fill);
+    }
+    let strength = if shown { 1.0 } else { 0.45 } * fade;
+    let color = theme.text.gamma_multiply(strength);
+    material::paint_icon(painter, egui::pos2(rect.left() + material::INSET_ICON, rect.center().y), icon, material::ICON_MD, theme.subtext0.gamma_multiply(strength));
+    painter.text(egui::pos2(rect.left() + material::INSET_LABEL, rect.center().y), egui::Align2::LEFT_CENTER, label, egui::FontId::proportional(material::FONT_BODY), color);
+    if pencil {
+        material::paint_icon(painter, egui::pos2(rect.right() - 56.0, rect.center().y), icons::RENAME, material::ICON_MD, theme.subtext0.gamma_multiply(fade));
+    }
+    if chevron {
+        material::paint_icon(painter, egui::pos2(rect.right() - if pencil { 90.0 } else { 56.0 }, rect.center().y), icons::CHEVRON_RIGHT, material::ICON_MD, theme.subtext0.gamma_multiply(strength));
+    }
+    if let Some(visible) = eye {
+        let icon = if visible { icons::VISIBILITY } else { icons::VISIBILITY_OFF };
+        material::paint_icon(painter, egui::pos2(rect.right() - 22.0, rect.center().y), icon, material::ICON_MD, theme.subtext0.gamma_multiply(fade));
+    }
+}
+
+struct EditRow {
+    rect: egui::Rect,
+    grip: egui::Response,
+    eye_clicked: bool,
+    edit_clicked: bool,
+}
+
+/// One row of the menu editor: dragged by its body, hidden or shown by its eye. `slot` paints it
+/// faded, as the place the dragged row would take; `indent` is for a submenu's entries.
+#[allow(clippy::too_many_arguments)]
+fn edit_row(ui: &mut egui::Ui, theme: &SerpantinumTheme, id: impl std::hash::Hash + std::fmt::Debug, icon: &str, label: &str, chevron: bool, shown: bool, indent: f32, slot: bool, eye: bool, pencil: bool) -> EditRow {
+    let (full, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), material::ENTRY_HEIGHT), egui::Sense::hover());
+    let rect = egui::Rect::from_min_max(egui::pos2(full.left() + indent, full.top()), full.right_bottom());
+    let id = ui.make_persistent_id(id);
+    // The eye and the pencil are buttons: pressing them must not start a drag of the row
+    let grip_end = rect.right() - if pencil { 72.0 } else if eye { 38.0 } else { 0.0 };
+    let grip = ui.interact(egui::Rect::from_min_max(rect.min, egui::pos2(grip_end.max(rect.left()), rect.bottom())), id, egui::Sense::drag());
+    let eye_rect = egui::Rect::from_center_size(egui::pos2(rect.right() - 22.0, rect.center().y), egui::vec2(30.0, 30.0));
+    let eye_resp = eye.then(|| ui.interact(eye_rect, id.with("eye"), egui::Sense::click()));
+    let pencil_rect = egui::Rect::from_center_size(egui::pos2(rect.right() - 56.0, rect.center().y), egui::vec2(30.0, 30.0));
+    let pencil_resp = pencil.then(|| ui.interact(pencil_rect, id.with("pencil"), egui::Sense::click()));
+    if grip.dragged() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+    } else if grip.hovered() && !eye_resp.as_ref().is_some_and(|e| e.hovered()) {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+    }
+    let hot = (grip.hovered() || grip.dragged()) && !slot;
+    let fill = hot.then(|| theme.surface1);
+    paint_edit_row(ui.painter(), theme, rect, icon, label, chevron, pencil, eye.then_some(shown), shown, fill, if slot { 0.3 } else { 1.0 });
+    EditRow { rect, grip, eye_clicked: eye_resp.is_some_and(|e| e.clicked()), edit_clicked: pencil_resp.is_some_and(|e| e.clicked()) }
+}
+
+impl FileManagerApp {
+    pub(crate) fn open_settings_dialog(&mut self) {
+        self.open_settings_at(0);
+    }
+
+    /// Opens the Settings window on a category, or brings an open one forward and switches it.
+    pub(crate) fn open_settings_at(&mut self, tab: usize) {
+        self.capturing_key = false;
+        if let Some(state) = self.settings_win.as_mut() {
+            state.tab = tab;
+            self.settings_raise = true;
+            return;
+        }
+        apps::preload_category_defaults();
+        self.settings_fresh = true;
+        self.icon_card_samples = pick_icon_card_samples();
+        self.settings_win = Some(SettingsState {
+            tab,
+            font_query: String::new(),
+            hex: self.settings.accent.clone().unwrap_or_default(),
+            picking: None,
+            defaults: Vec::new(),
+            keybind_search: String::new(),
+            capture: None,
+            conflict_warning: None,
+            theme_browser: None,
+            menu_kind: MenuKind::File,
+            menu_form: None,
+        });
+    }
+
+    pub(crate) fn persist_settings(&mut self) {
+        self.settings.view_mode = self.view_mode;
+        self.settings.sort_by = self.sort_by;
+        self.settings.sort_order = self.sort_order;
+        self.settings.show_hidden = self.show_hidden;
+        self.settings.folders_first = self.folders_first;
+        self.settings.columns = self.columns.clone();
+        self.settings.save();
+        self.saved_settings = self.settings.clone();
+    }
+
+    /// The name of the category that is open, for the window's header.
+    pub(crate) fn settings_category_name(state: &SettingsState) -> &'static str {
+        categories().iter().find(|c| c.0 == state.tab).map_or("", |c| c.2)
+    }
+
+    /// The column of categories down the side, under the window's title.
+    pub(crate) fn settings_sidebar(&mut self, ui: &mut egui::Ui, state: &mut SettingsState) {
+        let ctx = ui.ctx().clone();
+        let theme = self.theme;
+        ui.spacing_mut().item_spacing = egui::vec2(0.0, 2.0);
+
+        let categories = categories();
+        // One Tab stop for the whole list: Up and Down walk through the categories,
+        // Right (or Tab) goes into the settings of the chosen one
+        let focus_id = category_focus_id();
+        let want = ctx.data_mut(|d| d.remove_temp::<usize>(focus_id));
+        let fresh = material::dialog_fresh(&ctx);
+        let mut key = None;
+        for (idx, icon, label) in categories {
+            let resp = nav_item_roving(ui, ("set_cat_nav", idx), icon, label, &theme, state.tab == idx, state.tab == idx);
+            if resp.clicked() {
+                state.tab = idx;
+                if self.capturing_key {
+                    self.capturing_key = false;
+                    state.capture = None;
+                    state.conflict_warning = None;
+                }
+            }
+            if want == Some(idx) || (fresh && state.tab == idx) {
+                resp.request_focus();
+            }
+            if state.tab == idx {
+                key = material::take_arrow(&ctx, &resp, true, true);
+            }
+        }
+        let step = match key {
+            Some(egui::Key::ArrowDown) => 1,
+            Some(egui::Key::ArrowUp) => -1,
+            Some(egui::Key::ArrowRight) => {
+                // Let the first widget drawn after the list take the focus, as Tab would
+                ctx.memory_mut(|m| {
+                    if let Some(id) = m.focused() {
+                        m.surrender_focus(id);
+                    }
+                    m.move_focus(egui::FocusDirection::Next);
+                });
+                0
+            }
+            _ => 0,
+        };
+        let next = (state.tab as i32 + step).clamp(0, categories.len() as i32 - 1) as usize;
+        if next != state.tab {
+            state.tab = next;
+            ctx.data_mut(|d| d.insert_temp(focus_id, next));
+        }
+    }
+
+    /// The settings of the chosen category, in a column that stops growing with the window.
+    pub(crate) fn settings_page(&mut self, ui: &mut egui::Ui, state: &mut SettingsState) {
+        let SettingsState { tab, font_query, hex, picking, defaults, keybind_search, capture, conflict_warning, theme_browser, menu_kind, menu_form } = state;
+        let ctx = ui.ctx().clone();
+
+        // Ctrl+PageUp / Ctrl+PageDown (or Ctrl+Tab) switch category from anywhere in the window
+        if !self.capturing_key {
+            let switch = ctx.input_mut(|i| {
+                let ctrl = egui::Modifiers::CTRL;
+                if i.consume_key(ctrl, egui::Key::PageDown) || i.consume_key(ctrl, egui::Key::Tab) {
+                    1
+                } else if i.consume_key(ctrl, egui::Key::PageUp) || i.consume_key(ctrl.plus(egui::Modifiers::SHIFT), egui::Key::Tab) {
+                    -1
+                } else {
+                    0
+                }
+            });
+            if switch != 0 {
+                *tab = (*tab as i32 + switch).rem_euclid(CATEGORY_COUNT) as usize;
+                ctx.data_mut(|d| d.insert_temp(category_focus_id(), *tab));
+            }
+        }
+
+        let full = ui.available_width();
+        let column = full.min(PAGE_WIDTH);
+        let side = ((full - column) / 2.0).floor();
+        let started = std::time::Instant::now();
+        let enter_t = material::animate_enter(&ctx, ui.make_persistent_id(("set_tab_enter", *tab)), material::ANIM_FAST);
+        ui.set_opacity(ui.opacity() * enter_t);
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .id_salt(("set_scroll", *tab))
+            .show(ui, |ui| {
+                ui.add_space(4.0);
+                ui.horizontal_top(|ui| {
+                    ui.spacing_mut().item_spacing.x = 0.0;
+                    ui.add_space(side);
+                    ui.vertical(|ui| {
+                        ui.set_width(column - 12.0);
+                        ui.spacing_mut().item_spacing = egui::vec2(6.0, 8.0);
+                        match *tab {
+                            0 => self.general_tab(ui),
+                            1 => self.appearance_tab(ui, font_query, hex, theme_browser),
+                            2 => self.files_view_tab(ui),
+                            SIDEBAR_TAB => self.sidebar_tab(ui),
+                            4 => self.context_menu_tab(ui, menu_kind, menu_form),
+                            5 => self.behavior_tab(ui),
+                            6 => self.keybindings_tab(ui, keybind_search, capture, conflict_warning),
+                            7 => self.applications_tab(ui, picking, defaults),
+                            _ => self.plugins_tab(ui),
+                        }
+                        ui.add_space(8.0);
+                    });
+                });
+            });
+        // Left from a row that starts at the page's edge goes back to the category list
+        let pane = ui.min_rect();
+        let took = started.elapsed();
+        if took.as_millis() > 8 || pane.width() > full + 0.5 {
+            crate::app::settings_trace(&format!("page tab={} full={full:.1} column={column:.1} side={side} pane_w={:.1} build={took:?}", *tab, pane.width()));
+        }
+        let focused = ctx.memory(|m| m.focused());
+        if let Some(rect) = focused.and_then(|id| ctx.read_response(id)).map(|r| r.rect)
+            && rect.left() <= pane.left() + side + 24.0
+            && pane.contains(rect.center())
+            && !self.capturing_key
+            && !ctx.text_edit_focused()
+            && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowLeft))
+        {
+            ctx.data_mut(|d| d.insert_temp(category_focus_id(), *tab));
+        }
+    }
+
+    fn general_tab(&mut self, ui: &mut egui::Ui) {
+        let theme = self.theme;
+
+        material::section_label(ui, tr("Language"), &theme);
+        let query_id = ui.make_persistent_id("language_query");
+        let mut query: String = ui.ctx().data_mut(|d| d.get_temp(query_id)).unwrap_or_default();
+        material::input_frame(&theme).show(ui, |ui| {
+            ui.horizontal(|ui| {
+                material::input_icon(ui, icons::SEARCH, material::ICON_SM, theme.subtext1);
+                ui.add(
+                    egui::TextEdit::singleline(&mut query)
+                        .frame(egui::Frame::NONE)
+                        .desired_width(f32::INFINITY)
+                        .hint_text(tr("Search languages"))
+                        .font(egui::FontId::proportional(material::FONT_BODY)),
+                );
+            });
+        });
+        ui.ctx().data_mut(|d| d.insert_temp(query_id, query.clone()));
+        let needle = query.trim().to_lowercase();
+        group_card(ui, &theme, |ui| {
+            let mut options: Vec<(String, String, bool)> = vec![("system".to_owned(), tr("System default").to_owned(), self.settings.language == "system")];
+            for language in Language::ALL {
+                options.push((language.code().to_owned(), language.native_name().to_owned(), self.settings.language == language.code()));
+            }
+            options.retain(|(code, name, _)| needle.is_empty() || name.to_lowercase().contains(&needle) || code.to_lowercase().contains(&needle));
+            if options.is_empty() {
+                material::hint_label(ui, tr("No matching languages"), &theme);
+            }
+            for (code, name, on) in options {
+                if material::radio_row(ui, ("language", &code), &name, &theme, on).clicked() && !on {
+                    self.settings.language = code;
+                    i18n::set_language(i18n::resolve(&self.settings.language));
+                    self.persist_settings();
+                }
+            }
+        });
+
+        material::section_label(ui, tr("Startup"), &theme);
+        group_card(ui, &theme, |ui| {
+            let locations = [StartLocation::Launch, StartLocation::Home, StartLocation::LastVisited, StartLocation::RestoreTabs, StartLocation::Custom];
+            let labels = [tr("Launch folder"), tr("Home"), tr("Last visited"), tr("Restore last tabs"), tr("Custom")];
+            let current = locations.iter().position(|l| *l == self.settings.start_location).unwrap_or(0);
+            if let Some(i) = choice_row(ui, "start_loc", icons::HOME, tr("Open File Manager in"), &labels, current, &theme) {
+                self.settings.start_location = locations[i];
+                self.persist_settings();
+            }
+
+            material::collapsible(ui, "start_custom_path", self.settings.start_location == StartLocation::Custom, |ui| {
+                let mut path_str = self.settings.start_path.as_ref().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
+                let valid = path_str.is_empty() || PathBuf::from(&path_str).is_dir();
+                material::input_frame(&theme).show(ui, |ui| {
+                    let resp = ui.add(
+                        egui::TextEdit::singleline(&mut path_str)
+                            .frame(egui::Frame::NONE)
+                            .desired_width(f32::INFINITY)
+                            .hint_text(tr("/path/to/folder"))
+                            .text_color(if valid { theme.text } else { theme.red })
+                            .font(egui::FontId::proportional(material::FONT_BODY)),
+                    );
+                    if resp.changed() {
+                        self.settings.start_path = if path_str.trim().is_empty() { None } else { Some(PathBuf::from(path_str.trim())) };
+                        self.persist_settings();
+                    }
+                });
+                if !valid {
+                    material::hint_label(ui, tr("That folder does not exist; File Manager opens in Home instead"), &theme);
+                }
+            });
+        });
+
+        material::section_label(ui, tr("Windows"), &theme);
+        group_card(ui, &theme, |ui| {
+            if switch_row_with(ui, "open_in_new_win", icons::NEW_WINDOW, tr("Open folders in a new window"), None, &theme, self.settings.open_in_new_window).clicked() {
+                self.settings.open_in_new_window = !self.settings.open_in_new_window;
+                self.persist_settings();
+            }
+            let desc = Some(tr("Opens the next window instantly, at the cost of some memory while closed"));
+            if switch_row_with(ui, "run_in_background", icons::RUN, tr("Keep running in the background"), desc, &theme, self.settings.run_in_background).clicked() {
+                self.settings.run_in_background = !self.settings.run_in_background;
+                self.persist_settings();
+            }
+        });
+
+        material::section_label(ui, tr("File operations"), &theme);
+        group_card(ui, &theme, |ui| {
+            let desc = Some(tr("Ask before deleting for good or emptying the trash"));
+            if switch_row_with(ui, "confirm_delete", icons::DELETE_FOREVER, tr("Confirm permanent deletion"), desc, &theme, self.settings.confirm_delete).clicked() {
+                self.settings.confirm_delete = !self.settings.confirm_delete;
+                self.persist_settings();
+            }
+            let desc = Some(tr("Copies and moves to the same disk wait for each other instead of slowing each other down"));
+            if switch_row_with(ui, "queue_copies", icons::HISTORY, tr("Run copies to the same disk one at a time"), desc, &theme, self.settings.queue_copies).clicked() {
+                self.settings.queue_copies = !self.settings.queue_copies;
+                self.persist_settings();
+            }
+        });
+    }
+
+    /// Theme cards five to a row; clicking one switches to that palette. A theme of the user's has
+    /// an edit button beside its preview, and the "+" card opens the editor on a new one.
+    fn theme_cards(&mut self, ui: &mut egui::Ui, choices: Vec<(String, String, SerpantinumTheme)>) {
+        let theme = self.theme;
+        let gap = 8.0;
+        let per_row = 5usize;
+        let card_w = ((ui.available_width() - gap * (per_row - 1) as f32) / per_row as f32).floor().clamp(80.0, 140.0);
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(gap, gap);
+            for (id, label, preview) in choices {
+                let kind = if id == NEW_THEME {
+                    CardKind::Create
+                } else if id.starts_with("custom:") {
+                    CardKind::Editable
+                } else {
+                    CardKind::Plain
+                };
+                let width = if kind == CardKind::Editable { card_w + EDIT_ROOM } else { card_w };
+                let (card, edit) = theme_card(ui, ("theme_card", &id), width, &label, &preview, &theme, self.settings.theme == id, kind);
+                if edit {
+                    self.open_theme_editor(id.strip_prefix("custom:"));
+                } else if card.clicked() {
+                    if kind == CardKind::Create {
+                        self.open_theme_editor(None);
+                    } else {
+                        self.settings.theme = id;
+                        self.rebuild_theme();
+                        self.persist_settings();
+                    }
+                }
+            }
+        });
+    }
+
+    fn icon_style_cards(&mut self, ui: &mut egui::Ui) {
+        let theme = self.theme;
+        let samples = self.icon_card_samples.map(|i| FileItem::sample(ICON_SAMPLES[i].0, ICON_SAMPLES[i].1));
+        let gap = 8.0;
+        let per_row = 4usize;
+        let card_w = ((ui.available_width() - gap * (per_row - 1) as f32) / per_row as f32).floor().clamp(80.0, 140.0);
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(gap, gap);
+            for style in IconStyle::ALL {
+                if icon_style_card(ui, ("icon_style_card", style as u8), card_w, style, &theme, self.settings.icon_style == style, &samples).clicked() {
+                    self.settings.icon_style = style;
+                    self.persist_settings();
+                }
+            }
+        });
+    }
+
+    /// Every palette that is not on the Appearance page, dark and light apart, with a search.
+    /// Returns true when Back was clicked.
+    fn theme_browser_page(&mut self, ui: &mut egui::Ui, query: &mut String) -> bool {
+        let theme = self.theme;
+        let back = ui
+            .horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                let back = material::icon_button(ui, "theme_browser_back", icons::ARROW_BACK, &theme, true, tr("Back")).clicked();
+                ui.label(egui::RichText::new(tr("More themes")).size(material::FONT_TITLE).color(theme.text));
+                back
+            })
+            .inner;
+        material::input_frame(&theme).show(ui, |ui| {
+            ui.horizontal(|ui| {
+                material::input_icon(ui, icons::SEARCH, material::ICON_SM, theme.subtext1);
+                ui.add(
+                    egui::TextEdit::singleline(query)
+                        .frame(egui::Frame::NONE)
+                        .desired_width(f32::INFINITY)
+                        .hint_text(tr("Search themes"))
+                        .font(egui::FontId::proportional(material::FONT_BODY)),
+                );
+            });
+        });
+        let needle = query.trim().to_lowercase();
+        let matching = |light: bool| -> Vec<(String, String, SerpantinumTheme)> {
+            theme::presets()
+                .iter()
+                .filter(|p| p.more && p.colors.light == light && (needle.is_empty() || p.name.to_lowercase().contains(&needle) || p.id.contains(&needle)))
+                .map(|p| (p.id.to_owned(), p.name.to_owned(), preset_preview(p.id)))
+                .collect()
+        };
+        let (dark, light) = (matching(false), matching(true));
+        if dark.is_empty() && light.is_empty() {
+            material::hint_label(ui, tr("No matching themes"), &theme);
+        }
+        for (title, choices) in [(tr("Dark"), dark), (tr("Light"), light)] {
+            if !choices.is_empty() {
+                material::section_label(ui, title, &theme);
+                self.theme_cards(ui, choices);
+            }
+        }
+        back
+    }
+
+    fn appearance_tab(&mut self, ui: &mut egui::Ui, font_query: &mut String, hex: &mut String, theme_browser: &mut Option<String>) {
+        let theme = self.theme;
+
+        if let Some(query) = theme_browser {
+            if self.theme_browser_page(ui, query) {
+                *theme_browser = None;
+            }
+            return;
+        }
+
+        material::section_label(ui, tr("Theme"), &theme);
+        // The desktop's palette, the two plain ones and a "+" for making one, then the user's own
+        // and the curated palettes under a divider
+        let presets = theme::presets();
+        let main: Vec<_> = presets.iter().filter(|p| !p.more).collect();
+        let mut basics = vec![("system".to_owned(), tr("System").to_owned(), self.system_theme)];
+        basics.extend(main.iter().take(2).map(|p| (p.id.to_owned(), tr(p.name).to_owned(), preset_preview(p.id))));
+        basics.push((NEW_THEME.to_owned(), tr("New theme").to_owned(), self.theme));
+        self.theme_cards(ui, basics);
+        material::divider(ui, &theme);
+        let mut others: Vec<(String, String, SerpantinumTheme)> =
+            theme::user_themes().iter().filter(|c| !c.id.is_empty()).map(|c| (format!("custom:{}", c.id), c.name.clone(), c.colors.to_theme())).collect();
+        others.extend(main.iter().skip(2).map(|p| (p.id.to_owned(), tr(p.name).to_owned(), preset_preview(p.id))));
+        // A palette picked from the full list shows here too, so the choice stays visible
+        if let Some(p) = presets.iter().find(|p| p.more && p.id == self.settings.theme) {
+            others.push((p.id.to_owned(), tr(p.name).to_owned(), preset_preview(p.id)));
+        }
+        self.theme_cards(ui, others);
+        ui.add_space(2.0);
+        if material::button(ui, "theme_browse", Some(icons::PALETTE), tr("Browse more themes"), &theme, material::ButtonKind::Tonal, true).clicked() {
+            *theme_browser = Some(String::new());
+        }
+
+        material::section_label(ui, tr("Icon style"), &theme);
+        self.icon_style_cards(ui);
+        ui.add_space(2.0);
+        // Every icon of every style, in a window of its own
+        if material::button(ui, "icon_gallery_open", Some(icons::GRID_VIEW), tr("Show all icons"), &theme, material::ButtonKind::Tonal, true).clicked() {
+            self.icon_gallery = Some(self.settings.icon_style);
+        }
+
+        material::section_label(ui, tr("Accent color"), &theme);
+        group_card(ui, &theme, |ui| {
+        ui.add_space(6.0);
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(10.0, 10.0);
+            ui.add_space(8.0);
+            if chip(ui, "accent_default", None, tr("Theme default"), &theme, self.settings.accent.is_none()).clicked() {
+                self.settings.accent = None;
+                hex.clear();
+                self.rebuild_theme();
+                self.persist_settings();
+            }
+            for color in ACCENTS {
+                let c = theme::parse_hex(color).unwrap_or(Color32::GRAY);
+                let on = self.settings.accent.as_deref().is_some_and(|a| a.eq_ignore_ascii_case(color));
+                if material::swatch(ui, ("accent", color), c, &theme, on).clicked() {
+                    self.settings.accent = Some(color.to_owned());
+                    *hex = color.to_owned();
+                    self.rebuild_theme();
+                    self.persist_settings();
+                }
+            }
+        });
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            ui.add_space(8.0);
+            ui.spacing_mut().item_spacing.x = 12.0;
+            material::input_frame(&theme).show(ui, |ui| {
+                ui.set_width(120.0);
+                let resp = ui.add(
+                    egui::TextEdit::singleline(hex)
+                        .frame(egui::Frame::NONE)
+                        .desired_width(f32::INFINITY)
+                        .hint_text("#rrggbb")
+                        .font(egui::FontId::proportional(material::FONT_BODY)),
+                );
+                if resp.changed() {
+                    let text = hex.trim().to_owned();
+                    if text.len() == 7 && theme::parse_hex(&text).is_some() {
+                        self.settings.accent = Some(text.to_lowercase());
+                        self.rebuild_theme();
+                        self.persist_settings();
+                    }
+                }
+            });
+            ui.label(egui::RichText::new(tr("Custom hex color")).size(material::FONT_CAPTION).color(theme.subtext1));
+        });
+        ui.add_space(6.0);
+        });
+
+        material::section_label(ui, tr("Transparency"), &theme);
+        group_card(ui, &theme, |ui| {
+            let mut opacity = self.settings.opacity.clamp(1, 100);
+            if material::slider_row(ui, "opacity", icons::VISIBILITY, tr("Opacity"), &theme, &mut opacity, 1..=100, "%") {
+                self.settings.opacity = opacity;
+                self.rebuild_theme();
+                self.persist_settings();
+            }
+        });
+
+        material::section_label(ui, tr("Interface"), &theme);
+        group_card(ui, &theme, |ui| {
+            let scales = [0.85, 1.0, 1.15, 1.3];
+            let current = scales.iter().position(|s| (self.settings.scale - s).abs() < 0.01).unwrap_or(1);
+            if let Some(i) = choice_row(ui, "scale", icons::RESIZE, tr("Size"), &[tr("Compact"), tr("Default"), tr("Large"), tr("Larger")], current, &theme) {
+                self.settings.scale = scales[i];
+                ui.ctx().set_zoom_factor(scales[i]);
+                self.persist_settings();
+            }
+            const CORNERS: [f32; 4] = [0.0, 0.6, 1.0, 1.4];
+            let corners = CORNERS.iter().position(|c| (self.settings.corner_scale - c).abs() < 0.01).unwrap_or(2);
+            if let Some(i) = choice_row(ui, "corners", icons::ROUNDED_CORNER, tr("Corners"), &[tr("Square"), tr("Soft"), tr("Default"), tr("Round")], corners, &theme) {
+                self.settings.corner_scale = CORNERS[i];
+                self.rebuild_theme();
+                self.persist_settings();
+            }
+            if switch_row_with(ui, "app_animations", icons::ANIMATION, tr("Animations"), None, &theme, self.settings.animations).clicked() {
+                self.settings.animations = !self.settings.animations;
+                self.persist_settings();
+            }
+        });
+
+        material::section_label(ui, tr("Font"), &theme);
+        let current = self.settings.font_name.clone().unwrap_or_else(|| tr("Adwaita Sans (default)").to_owned());
+        material::hint_label(ui, &trf("Current: {}", &[&current]), &theme);
+        material::input_frame(&theme).show(ui, |ui| {
+            ui.horizontal(|ui| {
+                material::input_icon(ui, icons::SEARCH, material::ICON_SM, theme.subtext1);
+                ui.add(
+                    egui::TextEdit::singleline(font_query)
+                        .frame(egui::Frame::NONE)
+                        .desired_width(f32::INFINITY)
+                        .hint_text(tr("Search installed fonts"))
+                        .font(egui::FontId::proportional(material::FONT_BODY)),
+                );
+            });
+        });
+        let needle = font_query.trim().to_lowercase();
+        let all_fonts = crate::ui::fonts::system_fonts();
+        let fonts: Vec<&SystemFont> = all_fonts
+            .iter()
+            .filter(|f| needle.is_empty() || f.family.to_lowercase().contains(&needle))
+            .collect();
+        let show_default = needle.is_empty() || "adwaita sans".contains(&needle);
+        let total = fonts.len() + usize::from(show_default);
+        let mut picked: Option<Option<SystemFont>> = None;
+        // The list is one Tab stop; the arrow keys walk through it and scroll it along
+        let row_h = material::ENTRY_HEIGHT + 2.0;
+        let goto_id = egui::Id::unique("font_goto");
+        let held_id = egui::Id::unique("font_held");
+        let ctx = ui.ctx().clone();
+        let selected_row = fonts
+            .iter()
+            .position(|f| self.settings.font.as_deref() == Some(f.path.as_path()))
+            .map_or(0, |i| i + usize::from(show_default));
+        let mut list_focused = false;
+        let list_top = ui.cursor().top();
+        group_card(ui, &theme, |ui| {
+            egui::ScrollArea::vertical()
+                .max_height((ui.available_height() - 24.0).clamp(360.0, 640.0))
+                .min_scrolled_height(360.0)
+                .auto_shrink([false, true])
+                .id_salt("font_list")
+                .show_rows(ui, row_h, total, |ui, range| {
+                    ui.spacing_mut().item_spacing.y = 2.0;
+                    let stop = if range.contains(&selected_row) { selected_row } else { range.start };
+                    let goto = ctx.data(|d| d.get_temp::<usize>(goto_id));
+                    // The row with focus and the one about to get it stay focusable, whatever the Tab stop is
+                    let held = ctx.data(|d| d.get_temp::<usize>(held_id));
+                    let mut next = None;
+                    let mut any_focus = false;
+                    for row in range.clone() {
+                        let resp = if show_default && row == 0 {
+                            let on = self.settings.font.is_none();
+                            let resp = nav_item_roving(ui, "font_default", icons::DOCUMENT, tr("Adwaita Sans (default)"), &theme, on, row == stop || held == Some(row) || goto == Some(row));
+                            if resp.clicked() {
+                                picked = Some(None);
+                            }
+                            resp
+                        } else {
+                            let font = fonts[row - usize::from(show_default)];
+                            let on = self.settings.font.as_deref() == Some(font.path.as_path());
+                            let resp = nav_item_roving(ui, ("font_row", &font.path), icons::DOCUMENT, &font.family, &theme, on, row == stop || held == Some(row) || goto == Some(row));
+                            if resp.clicked() {
+                                picked = Some(Some(font.clone()));
+                            }
+                            resp
+                        };
+                        list_focused |= resp.gained_focus() || goto == Some(row);
+                        if resp.has_focus() {
+                            any_focus = true;
+                            ctx.data_mut(|d| d.insert_temp(held_id, row));
+                        }
+                        if goto == Some(row) {
+                            resp.request_focus();
+                            any_focus = true;
+                            ctx.data_mut(|d| {
+                                d.remove_temp::<usize>(goto_id);
+                                d.insert_temp(held_id, row);
+                            });
+                        }
+                        match material::take_arrow(&ctx, &resp, false, true) {
+                            Some(egui::Key::ArrowDown) => next = Some((row + 1).min(total - 1)),
+                            Some(_) => next = Some(row.saturating_sub(1)),
+                            None => {}
+                        }
+                    }
+                    if !any_focus && goto.is_none() {
+                        ctx.data_mut(|d| d.remove_temp::<usize>(held_id));
+                    }
+                    if let Some(target) = next.or(goto.filter(|g| !range.contains(g))) {
+                        ctx.data_mut(|d| d.insert_temp(goto_id, target));
+                        if !range.contains(&target) || target == range.start || target + 1 == range.end {
+                            let y = ui.max_rect().top() + (target as f32 - range.start as f32) * row_h;
+                            ui.scroll_to_rect(Rect::from_min_size(Pos2::new(ui.max_rect().left(), y), Vec2::new(1.0, row_h)), None);
+                        }
+                    }
+                });
+        });
+        if list_focused {
+            // Bring the whole list into view, not just the sliver the dialog happens to show
+            let card = Rect::from_min_max(Pos2::new(ui.max_rect().left(), list_top), Pos2::new(ui.max_rect().right(), ui.cursor().top()));
+            ui.scroll_to_rect(card, Some(egui::Align::Center));
+        }
+        if let Some(choice) = picked {
+            self.settings.font = choice.as_ref().map(|f| f.path.clone());
+            self.settings.font_name = choice.map(|f| f.family);
+            self.fonts_dirty = true;
+            self.persist_settings();
+        }
+    }
+
+    /// The "Sort by" row of the Files & View tab: a title like the rows around it, the fields as chips below.
+    fn sort_field_chips(&self, ui: &mut egui::Ui, theme: &SerpantinumTheme) -> Option<SortBy> {
+        let (head, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), material::ENTRY_HEIGHT), egui::Sense::hover());
+        material::paint_icon(ui.painter(), head.left_center() + egui::vec2(material::INSET_ICON + 2.0, 0.0), icons::SORT_VARIANT, material::ICON_MD, theme.subtext0);
+        material::paint_label(ui, head.left() + material::INSET_LABEL + 2.0, head.center().y, tr("Sort by"), material::FONT_BODY, theme.text, head.width() - material::INSET_LABEL - 12.0);
+        let fields = [SortBy::Name, SortBy::Size, SortBy::Type, SortBy::Modified, SortBy::Created, SortBy::Accessed, SortBy::Owner, SortBy::Permissions];
+        let labels = [tr("Name"), tr("Size"), tr("Type"), tr("Last modified"), tr("Created"), tr("Accessed"), tr("Owner"), tr("Permissions")];
+        let picked = material::chip_rows(ui, "fv_sort", &labels, |i| self.sort_by == fields[i], theme).map(|i| fields[i]);
+        ui.add_space(4.0);
+        picked
+    }
+
+    /// The places the sidebar offers, each with a box to keep it there, grouped as the sidebar is.
+    fn sidebar_tab(&mut self, ui: &mut egui::Ui) {
+        use crate::fs::places::PlaceGroup;
+        let theme = self.theme;
+        group_card(ui, &theme, |ui| {
+            if switch_row_with(ui, "sb_show_sidebar", icons::SIDEBAR, tr("Sidebar"), None, &theme, self.settings.show_sidebar).clicked() {
+                self.settings.show_sidebar = !self.settings.show_sidebar;
+                self.persist_settings();
+            }
+            let all = self.settings.show_all_partitions;
+            let about = tr("Internal disks and partitions too; off shows only Computer and the drives you plug in");
+            if switch_row_with(ui, "sb_all_partitions", icons::HARD_DISK, tr("Show all disks and partitions"), Some(about), &theme, all).clicked() {
+                self.settings.show_all_partitions = !all;
+                self.persist_settings();
+                self.request_drive_listing(ui.ctx(), true);
+            }
+        });
+        material::section_label(ui, tr("Show these places in the sidebar"), &theme);
+        let mut change = None;
+        for group in [PlaceGroup::Main, PlaceGroup::Folders, PlaceGroup::Devices] {
+            let places: Vec<_> = self.places.iter().filter(|p| p.group == group).filter_map(|p| Some((p.builtin?, p.icon, tr_dyn(&p.name)))).collect();
+            if places.is_empty() {
+                continue;
+            }
+            group_card(ui, &theme, |ui| {
+                for (place, icon, name) in places {
+                    let shown = self.place_shown(place);
+                    if material::check_row(ui, ("sb_place", place), icon, &name, &theme, shown).clicked() {
+                        change = Some((place, !shown));
+                    }
+                }
+            });
+        }
+        // Under the servers, off until ticked here or from the sidebar's hidden places
+        group_card(ui, &theme, |ui| {
+            let place = crate::fs::places::SidebarPlace::ConnectToServer;
+            let shown = self.place_shown(place);
+            if material::check_row(ui, ("sb_place", place), icons::LAN_CONNECT, tr("Connect to server…"), &theme, shown).clicked() {
+                change = Some((place, !shown));
+            }
+        });
+        if let Some((place, shown)) = change {
+            self.show_place(place, shown, false);
+        }
+        ui.label(egui::RichText::new(tr("Right-click a place in the sidebar to hide it, or the sidebar itself to show the hidden ones")).size(material::FONT_CAPTION).color(theme.subtext1));
+    }
+
+    /// One right-click menu at a time (files, folders or the empty part of a folder), laid out as
+    /// the menu is: its groups between dividers, its submenus open. Rows are dragged anywhere in
+    /// it, into or out of a submenu, and each has an eye to hide it.
+    fn context_menu_tab(&mut self, ui: &mut egui::Ui, kind: &mut MenuKind, form: &mut Option<MenuForm>) {
+        let theme = self.theme;
+        let kinds = [MenuKind::File, MenuKind::Folder, MenuKind::Background];
+        let names = [tr("Files"), tr("Folders"), tr("Empty space")];
+        let current = kinds.iter().position(|k| k == kind).unwrap_or(0);
+        if let Some(i) = material::segmented_sized(ui, "cm_kind", &names, current, &theme, None, Some(ui.available_width()), None) {
+            *kind = kinds[i];
+            *form = None;
+        }
+        let kind = *kind;
+        let ctx = ui.ctx().clone();
+
+        let config = self.settings.context_menus.get(kind).clone();
+        let hidden = config.hidden.clone();
+        let plugin_entries: Vec<(MenuKey, Option<&'static str>, &'static str, &'static str)> = self
+            .plugins
+            .menu_catalog(kind == MenuKind::Background)
+            .into_iter()
+            .map(|(plugin, item)| (crate::settings::plugin_menu_key(plugin, &item.id), item.group.map(|_| plugin), item.icon, item.label))
+            .collect();
+        let plugin_keys: Vec<(MenuKey, Option<&'static str>)> = plugin_entries.iter().map(|e| (e.0, e.1)).collect();
+        // The icon and name of an entry; a plugin's come from the plugin
+        let look = |key: MenuKey, in_sub: bool| -> (&'static str, &'static str) {
+            match key {
+                MenuKey::Plugin(_) => plugin_entries.iter().find(|e| e.0 == key).map_or((icons::MORE, ""), |e| (e.2, e.3)),
+                key => (key.icon(), key.label(in_sub)),
+            }
+        };
+        let layout = complete_layout(kind, &config.layout, &plugin_keys);
+        // While a row is dragged the menu shows it already in the place it would take
+        let mut drag: Option<MenuDrag> = ctx.data(|d| d.get_temp(menu_drag_id()));
+        let mut display = layout.clone();
+        if let Some(d) = drag
+            && let Some(node) = take_item(&mut display, d.item)
+        {
+            put_item(&mut display, node, d.to);
+        }
+
+        let mut flip: Vec<(Vec<MenuKey>, bool)> = Vec::new();
+        let mut started: Option<MenuDrag> = None;
+        let (mut dragging, mut stopped) = (false, false);
+        // The places a row can be dropped at, by the middle of the row that follows them
+        let mut spots: Vec<(f32, Spot)> = Vec::new();
+        let mut slot: Option<(egui::Rect, &'static str, &'static str, bool, bool)> = None;
+        let dragging_sub = drag.is_some_and(|d| matches!(d.item, DragItem::Sub(_)));
+
+        material::section_label(ui, tr("Drag entries to rearrange the menu, and use the eye to hide one"), &theme);
+        let mut reset = false;
+        ui.horizontal(|ui| {
+            if form.is_none()
+                && material::button(ui, "cm_new_group", Some(icons::ADD), tr("New group…"), &theme, material::ButtonKind::Tonal, true).clicked()
+            {
+                *form = Some(MenuForm { editing: None, name: String::new(), icon: 0, picks: Vec::new() });
+            }
+            reset = config != MenuConfig::default()
+                && material::button(ui, "cm_reset", Some(icons::RESTORE), tr("Reset this menu"), &theme, material::ButtonKind::Tonal, true).clicked();
+        });
+        if let Some(f) = form.as_mut() {
+            #[derive(Clone, Copy)]
+            enum Done {
+                Save,
+                Delete,
+                Cancel,
+            }
+            let mut done = None;
+            let creating = f.editing.is_none();
+            group_card(ui, &theme, |ui| {
+                material::input_frame(&theme).show(ui, |ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut f.name)
+                            .frame(egui::Frame::NONE)
+                            .desired_width(f32::INFINITY)
+                            .hint_text(tr("Group name"))
+                            .font(egui::FontId::proportional(material::FONT_BODY)),
+                    );
+                });
+                ui.add_space(4.0);
+                ui.horizontal_wrapped(|ui| {
+                    for (i, icon) in GROUP_ICONS.iter().enumerate() {
+                        if material::chip_width(ui, ("cm_group_icon", i), Some(icon), "", &theme, f.icon == i, Some(40.0)).clicked() {
+                            f.icon = i;
+                        }
+                    }
+                });
+                if creating {
+                    ui.add_space(4.0);
+                    ui.label(egui::RichText::new(tr("Entries to put in it")).size(material::FONT_CAPTION).color(theme.subtext1));
+                    let keys: Vec<MenuKey> = layout.iter().flatten().flat_map(|n| match n {
+                        MenuNode::Entry(key) => vec![*key],
+                        MenuNode::Submenu(..) => Vec::new(),
+                    }).collect();
+                    ui.horizontal_wrapped(|ui| {
+                        for key in keys {
+                            let on = f.picks.contains(&key);
+                            if material::chip(ui, ("cm_group_pick", key), Some(look(key, false).0), look(key, false).1, &theme, on).clicked() {
+                                if on {
+                                    f.picks.retain(|k| *k != key);
+                                } else {
+                                    f.picks.push(key);
+                                }
+                            }
+                        }
+                    });
+                }
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    // A group needs a name and an entry to hold
+                    let ready = !f.name.trim().is_empty() && (!creating || !f.picks.is_empty());
+                    let label = if creating { tr("Create") } else { tr("Save") };
+                    if material::button(ui, "cm_form_save", None, label, &theme, material::ButtonKind::Filled, ready).clicked() {
+                        done = Some(Done::Save);
+                    }
+                    if material::button(ui, "cm_form_cancel", None, tr("Cancel"), &theme, material::ButtonKind::Text, true).clicked() {
+                        done = Some(Done::Cancel);
+                    }
+                    if !creating && material::button(ui, "cm_form_delete", Some(icons::TRASH), tr("Delete"), &theme, material::ButtonKind::Danger, true).clicked() {
+                        done = Some(Done::Delete);
+                    }
+                });
+            });
+            if let Some(done) = done {
+                let (name, icon) = (f.name.trim().to_owned(), GROUP_ICONS[f.icon.min(GROUP_ICONS.len() - 1)].to_owned());
+                let (editing, picks) = (f.editing, std::mem::take(&mut f.picks));
+                let config = self.settings.context_menus.get_mut(kind);
+                let mut arranged = layout.clone();
+                match (done, editing) {
+                    (Done::Save, Some(id)) => {
+                        if let Some(group) = config.custom_groups.iter_mut().find(|g| g.id == id) {
+                            group.name = name;
+                            group.icon = icon;
+                        }
+                    }
+                    (Done::Save, None) => {
+                        let id = config.custom_groups.iter().map(|g| g.id + 1).max().unwrap_or(0);
+                        // It sits in the group of its first entry, at the end
+                        let at = picks.first().and_then(|k| match spot_of(&arranged, DragItem::Entry(*k)) {
+                            Some(Spot::Top(g, _)) => Some(g),
+                            Some(Spot::Inside(sub, _)) => arranged.iter().position(|grp| grp.iter().any(|n| matches!(n, MenuNode::Submenu(s, _) if *s == sub))),
+                            None => None,
+                        });
+                        for key in &picks {
+                            take_item(&mut arranged, DragItem::Entry(*key));
+                        }
+                        if let Some(group) = arranged.get_mut(at.unwrap_or(0)) {
+                            group.push(MenuNode::Submenu(SubmenuId::Custom(id), picks));
+                            config.custom_groups.push(CustomGroup { id, name, icon });
+                        }
+                    }
+                    (Done::Delete, Some(id)) => {
+                        // Its entries stay, where it was
+                        for group in arranged.iter_mut() {
+                            if let Some(i) = group.iter().position(|n| matches!(n, MenuNode::Submenu(SubmenuId::Custom(c), _) if *c == id))
+                                && let MenuNode::Submenu(_, keys) = group.remove(i)
+                            {
+                                for (k, key) in keys.into_iter().enumerate() {
+                                    group.insert(i + k, MenuNode::Entry(key));
+                                }
+                            }
+                        }
+                        config.custom_groups.retain(|g| g.id != id);
+                    }
+                    _ => {}
+                }
+                if !matches!(done, Done::Cancel) {
+                    config.layout = if arranged == complete_layout(kind, &Vec::new(), &plugin_keys) && config.custom_groups.is_empty() { Vec::new() } else { arranged };
+                    self.persist_settings();
+                }
+                *form = None;
+            }
+        }
+        let panel = ui.available_width();
+        let side = ((ui.available_width() - panel) / 2.0).floor().max(0.0);
+        ui.horizontal_top(|ui| {
+            ui.add_space(side);
+            ui.vertical(|ui| {
+                ui.set_width(panel);
+                egui::Frame::new()
+                    .fill(theme.mantle)
+                    .corner_radius(egui::CornerRadius::same(material::radius_container()))
+                    .inner_margin(egui::Margin::same(8))
+                    .show(ui, |ui| {
+                        ui.set_width(panel - 16.0);
+                        ui.spacing_mut().item_spacing.y = 2.0;
+                        for (g, group) in display.iter().enumerate() {
+                            if g > 0 {
+                                material::divider(ui, &theme);
+                            }
+                            let mut at = 0;
+                            for node in group {
+                                match node {
+                                    MenuNode::Entry(key) => {
+                                        let item = DragItem::Entry(*key);
+                                        let is_slot = drag.is_some_and(|d| d.item == item);
+                                        let shown = !hidden.contains(key);
+                                        let row = edit_row(ui, &theme, ("cm_entry", *key), look(*key, false).0, look(*key, false).1, false, shown, 0.0, is_slot, true, false);
+                                        if is_slot {
+                                            slot = Some((row.rect, look(*key, false).0, look(*key, false).1, false, shown));
+                                        } else {
+                                            spots.push((row.rect.center().y, Spot::Top(g, at)));
+                                            at += 1;
+                                        }
+                                        if row.eye_clicked {
+                                            flip.push((vec![*key], shown));
+                                        }
+                                        if row.grip.drag_started() {
+                                            started = Some(MenuDrag { item, to: spot_of(&layout, item).unwrap_or(Spot::Top(g, at)) });
+                                        }
+                                        dragging |= row.grip.dragged();
+                                        stopped |= row.grip.drag_stopped();
+                                    }
+                                    MenuNode::Submenu(id, keys) => {
+                                        let item = DragItem::Sub(*id);
+                                        let is_slot = drag.is_some_and(|d| d.item == item);
+                                        let shown = keys.is_empty() || keys.iter().any(|k| !hidden.contains(k));
+                                        let top = ui.cursor().top();
+                                        let (mut sub_icon, sub_label) = config.submenu_look(*id);
+                                        if let (SubmenuId::Group(_), Some(first)) = (id, keys.first()) {
+                                            sub_icon = look(*first, true).0;
+                                        }
+                                        let made = matches!(id, SubmenuId::Custom(_));
+                                        let row = edit_row(ui, &theme, ("cm_sub", *id), sub_icon, sub_label, true, shown, 0.0, is_slot, !keys.is_empty(), made);
+                                        if row.edit_clicked
+                                            && let SubmenuId::Custom(n) = id
+                                            && let Some(group) = config.custom_groups.iter().find(|g| g.id == *n)
+                                        {
+                                            let icon = GROUP_ICONS.iter().position(|i| *i == group.icon).unwrap_or(0);
+                                            *form = Some(MenuForm { editing: Some(*n), name: group.name.clone(), icon, picks: Vec::new() });
+                                        }
+                                        if is_slot {
+                                            slot = Some((row.rect, sub_icon, sub_label, true, shown));
+                                        } else if !dragging_sub {
+                                            spots.push((row.rect.center().y, Spot::Top(g, at)));
+                                        }
+                                        if row.eye_clicked {
+                                            flip.push((keys.clone(), shown));
+                                        }
+                                        if row.grip.drag_started() {
+                                            started = Some(MenuDrag { item, to: spot_of(&layout, item).unwrap_or(Spot::Top(g, at)) });
+                                        }
+                                        dragging |= row.grip.dragged();
+                                        stopped |= row.grip.drag_stopped();
+                                        let mut inside = 0;
+                                        for key in keys {
+                                            let item = DragItem::Entry(*key);
+                                            let is_slot_child = drag.is_some_and(|d| d.item == item);
+                                            let shown = !hidden.contains(key);
+                                            let row = edit_row(ui, &theme, ("cm_entry", *key), look(*key, true).0, look(*key, true).1, false, shown, 22.0, is_slot_child || is_slot, true, false);
+                                            if is_slot_child {
+                                                slot = Some((row.rect, look(*key, true).0, look(*key, true).1, false, shown));
+                                            } else if !is_slot && !dragging_sub {
+                                                spots.push((row.rect.center().y, Spot::Inside(*id, inside)));
+                                                inside += 1;
+                                            }
+                                            if row.eye_clicked {
+                                                flip.push((vec![*key], shown));
+                                            }
+                                            if row.grip.drag_started() {
+                                                started = Some(MenuDrag { item, to: spot_of(&layout, item).unwrap_or(Spot::Inside(*id, inside)) });
+                                            }
+                                            dragging |= row.grip.dragged();
+                                            stopped |= row.grip.drag_stopped();
+                                        }
+                                        // The end of the submenu, to drop a row into it last
+                                        let (end, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 6.0), egui::Sense::hover());
+                                        if !is_slot && !dragging_sub {
+                                            spots.push((end.center().y, Spot::Inside(*id, inside)));
+                                        }
+                                        if !is_slot {
+                                            if dragging_sub {
+                                                spots.push(((top + end.bottom()) / 2.0, Spot::Top(g, at)));
+                                            }
+                                            at += 1;
+                                        }
+                                    }
+                                }
+                            }
+                            // The end of the group, which an empty group is only
+                            let (end, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), if group.is_empty() { 30.0 } else { 6.0 }), egui::Sense::hover());
+                            spots.push((end.center().y, Spot::Top(g, at)));
+                        }
+                    });
+            });
+        });
+
+        let mut changed = false;
+        if started.is_some() {
+            drag = started;
+        } else if dragging
+            && let (Some(d), Some(pointer)) = (drag.as_mut(), ctx.pointer_interact_pos())
+        {
+            // The first place below the pointer, or the last one when it is below them all
+            let below = spots.iter().filter(|s| s.0 > pointer.y).min_by(|a, b| a.0.total_cmp(&b.0));
+            if let Some((_, spot)) = below.or_else(|| spots.iter().max_by(|a, b| a.0.total_cmp(&b.0))) {
+                d.to = *spot;
+            }
+            // Scroll the page when the row is held at its edge
+            let (view, edge) = (ui.clip_rect(), 48.0);
+            if pointer.y < view.top() + edge {
+                ui.scroll_with_delta(egui::vec2(0.0, 14.0));
+            } else if pointer.y > view.bottom() - edge {
+                ui.scroll_with_delta(egui::vec2(0.0, -14.0));
+            }
+        }
+        if stopped {
+            // The menu already shows the row where it was let go
+            if drag.take().is_some() {
+                let mut display = display;
+                let config = self.settings.context_menus.get_mut(kind);
+                // A submenu made here that was emptied is gone
+                prune_custom(&mut display, config);
+                config.layout = if display == complete_layout(kind, &Vec::new(), &plugin_keys) { Vec::new() } else { display };
+                changed = true;
+            }
+        } else if drag.is_some() && !ctx.input(|i| i.pointer.any_down()) {
+            drag = None;
+        }
+        if drag.is_some() {
+            if let (Some((rect, icon, label, chevron, shown)), Some(pointer)) = (slot, ctx.pointer_interact_pos()) {
+                let rect = egui::Rect::from_center_size(egui::pos2(rect.center().x, pointer.y), rect.size());
+                let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::NULL.with("cm_ghost")));
+                painter.rect_filled(rect.translate(egui::vec2(0.0, 3.0)).expand(1.0), egui::CornerRadius::same(material::radius_lg()), egui::Color32::from_black_alpha(70));
+                // Opaque, so the rows under it do not show through, with the theme's faint highlight on top
+                painter.rect_filled(rect, egui::CornerRadius::same(material::radius_lg()), theme.mantle);
+                painter.rect_filled(rect, egui::CornerRadius::same(material::radius_lg()), theme.with_alpha(theme.mauve, 44));
+                paint_edit_row(&painter, &theme, rect, icon, label, chevron, false, Some(shown), shown, None, 1.0);
+            }
+            ctx.request_repaint();
+        }
+        ctx.data_mut(|data| match drag {
+            Some(d) => {
+                data.insert_temp(menu_drag_id(), d);
+            }
+            None => {
+                data.remove::<MenuDrag>(menu_drag_id());
+            }
+        });
+
+        for (keys, shown) in flip {
+            let hidden = &mut self.settings.context_menus.get_mut(kind).hidden;
+            for key in keys {
+                hidden.retain(|k| *k != key);
+                if shown {
+                    hidden.push(key);
+                }
+            }
+            changed = true;
+        }
+        if changed {
+            self.persist_settings();
+        }
+        ui.label(egui::RichText::new(tr("The Trash menu is not affected")).size(material::FONT_CAPTION).color(theme.subtext1));
+        if reset {
+            *self.settings.context_menus.get_mut(kind) = MenuConfig::default();
+            self.persist_settings();
+        }
+    }
+
+    fn files_view_tab(&mut self, ui: &mut egui::Ui) {
+        let theme = self.theme;
+
+        material::section_label(ui, tr("View"), &theme);
+        group_card(ui, &theme, |ui| {
+            if let Some(i) = material::choice_row_with(ui, "fv_view", icons::VIEW_LIST, tr("Default view"), &[tr("List view"), tr("Grid view")], Some(&[icons::VIEW_LIST, icons::GRID_VIEW]), usize::from(self.view_mode == ViewMode::Grid), &theme) {
+                self.view_mode = if i == 0 { ViewMode::List } else { ViewMode::Grid };
+                self.settings.view_mode = self.view_mode;
+                self.persist_settings();
+            }
+            if let Some(field) = self.sort_field_chips(ui, &theme) {
+                self.sort_by = field;
+                self.settings.sort_by = field;
+                self.apply_sort();
+                self.persist_settings();
+            }
+            let descending = self.sort_order == SortOrder::Descending;
+            let order_icon = if descending { icons::SORT_DESC } else { icons::SORT_ASC };
+            if switch_row_with(ui, "fv_sort_order", order_icon, tr("Reverse order"), None, &theme, descending).clicked() {
+                self.sort_order = if descending { SortOrder::Ascending } else { SortOrder::Descending };
+                self.settings.sort_order = self.sort_order;
+                self.apply_sort();
+                self.persist_settings();
+            }
+        });
+
+        material::section_label(ui, tr("Layout"), &theme);
+        group_card(ui, &theme, |ui| {
+            if switch_row_with(ui, "fv_show_hidden", icons::VISIBILITY, tr("Hidden files"), None, &theme, self.show_hidden).clicked() {
+                self.show_hidden = !self.show_hidden;
+                self.settings.show_hidden = self.show_hidden;
+                self.reread_items();
+                self.persist_settings();
+            }
+            if switch_row_with(ui, "fv_folders_first", icons::FOLDER, tr("Folders first"), None, &theme, self.folders_first).clicked() {
+                self.folders_first = !self.folders_first;
+                self.settings.folders_first = self.folders_first;
+                self.apply_sort();
+                self.persist_settings();
+            }
+            if switch_row_with(ui, "fv_show_sidebar", icons::SIDEBAR, tr("Sidebar"), None, &theme, self.settings.show_sidebar).clicked() {
+                self.settings.show_sidebar = !self.settings.show_sidebar;
+                self.persist_settings();
+            }
+            if switch_row_with(ui, "fv_show_status", icons::STATUS_BAR, tr("Status bar"), None, &theme, self.settings.show_status_bar).clicked() {
+                self.settings.show_status_bar = !self.settings.show_status_bar;
+                self.persist_settings();
+            }
+            let desc = Some(tr("Each folder keeps its own list or grid choice"));
+            if switch_row_with(ui, "fv_remember_view", icons::PIN, tr("Remember view per folder"), desc, &theme, self.settings.remember_view_per_folder).clicked() {
+                self.settings.remember_view_per_folder = !self.settings.remember_view_per_folder;
+                self.persist_settings();
+            }
+        });
+
+        material::section_label(ui, tr("List view"), &theme);
+        group_card(ui, &theme, |ui| {
+            let densities = [Density::Compact, Density::Comfortable, Density::Spacious];
+            let current = densities.iter().position(|d| *d == self.settings.density).unwrap_or(1);
+            if let Some(i) = choice_row(ui, "fv_density", icons::RESIZE, tr("Row height"), &[tr("Compact"), tr("Comfortable"), tr("Spacious")], current, &theme) {
+                self.settings.density = densities[i];
+                self.persist_settings();
+            }
+            // Title like the rows above; the chips under it share the full width of the card
+            let (head, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), material::ENTRY_HEIGHT), egui::Sense::hover());
+            material::paint_icon(ui.painter(), head.left_center() + egui::vec2(material::INSET_ICON + 2.0, 0.0), icons::VIEW_COLUMN, material::ICON_MD, theme.subtext0);
+            material::paint_label(ui, head.left() + material::INSET_LABEL + 2.0, head.center().y, tr("Columns"), material::FONT_BODY, theme.text, head.width() - material::INSET_LABEL - 12.0);
+            let labels = Column::ALL.map(|c| c.label());
+            if let Some(i) = material::chip_rows(ui, "fv_col", &labels, |i| self.columns.contains(&Column::ALL[i]), &theme) {
+                let col = Column::ALL[i];
+                self.columns = Column::ALL
+                    .into_iter()
+                    .filter(|c| (*c == col) != self.columns.contains(c))
+                    .collect();
+                self.settings.columns = self.columns.clone();
+                self.persist_settings();
+            }
+            ui.add_space(4.0);
+        });
+
+        material::section_label(ui, tr("Grid view"), &theme);
+        group_card(ui, &theme, |ui| {
+            let size = self.settings.grid_size;
+            let (less, more) = material::setting_stepper_row(ui, "fv_grid_size", icons::RESIZE, tr("Icon size"), &theme, &size.label(), size.can_step(-1), size.can_step(1));
+            if less || more {
+                self.settings.grid_size = size.step(if more { 1 } else { -1 });
+                self.persist_settings();
+            }
+            let lines = [1u8, 2, 3];
+            let current = lines.iter().position(|l| *l == self.settings.grid_name_lines).unwrap_or(1);
+            if let Some(i) = choice_row(ui, "fv_grid_lines", icons::TEXT, tr("Name lines"), &["1", "2", "3"], current, &theme) {
+                self.settings.grid_name_lines = lines[i];
+                self.persist_settings();
+            }
+        });
+
+        material::section_label(ui, tr("Details"), &theme);
+        group_card(ui, &theme, |ui| {
+            if switch_row_with(ui, "fv_show_thumbs", icons::IMAGE, tr("Thumbnails"), None, &theme, self.settings.show_thumbnails).clicked() {
+                self.settings.show_thumbnails = !self.settings.show_thumbnails;
+                self.persist_settings();
+            }
+            let desc = Some(tr("Thumbnails and folder item counts for files on servers, which reads them over the network"));
+            if switch_row_with(ui, "fv_remote_previews", icons::SERVER_NETWORK, tr("Previews on servers"), desc, &theme, self.settings.remote_previews).clicked() {
+                self.settings.remote_previews = !self.settings.remote_previews;
+                crate::fs::network::set_remote_previews(self.settings.remote_previews);
+                self.persist_settings();
+                self.reread_items();
+            }
+            if switch_row_with(ui, "fv_show_exts", icons::DOCUMENT, tr("File extensions"), None, &theme, self.settings.show_extensions).clicked() {
+                self.settings.show_extensions = !self.settings.show_extensions;
+                self.persist_settings();
+            }
+            let desc = Some(tr("Show “Yesterday” or “2 weeks ago” instead of a date"));
+            if switch_row_with(ui, "fv_relative_dates", icons::RECENT, tr("Relative dates"), desc, &theme, self.settings.relative_dates).clicked() {
+                self.settings.relative_dates = !self.settings.relative_dates;
+                self.persist_settings();
+            }
+            let modes = [crate::settings::FolderSizeMode::Off, crate::settings::FolderSizeMode::OnDemand, crate::settings::FolderSizeMode::Always];
+            let at = modes.iter().position(|m| *m == self.settings.folder_sizes).unwrap_or(1);
+            if let Some(i) = choice_row(ui, "fv_folder_sizes", icons::STORAGE, tr("Folder sizes"), &[tr("Off"), tr("On demand"), tr("Always")], at, &theme) {
+                self.settings.folder_sizes = modes[i];
+                self.persist_settings();
+            }
+            let desc = Some(tr("Measure the space folders occupy on disk instead of the sum of file sizes"));
+            if switch_row_with(ui, "fv_size_on_disk", icons::STORAGE, tr("Size on disk"), desc, &theme, self.settings.size_on_disk).clicked() {
+                self.settings.size_on_disk = !self.settings.size_on_disk;
+                self.persist_settings();
+                self.apply_sort();
+            }
+            let current = usize::from(self.settings.decimal_units);
+            if let Some(i) = choice_row(ui, "fv_units", icons::RULER, tr("File size units"), &["1024 B = 1 KiB", "1000 B = 1 KB"], current, &theme) {
+                self.settings.decimal_units = i == 1;
+                self.persist_settings();
+            }
+        });
+    }
+
+    fn behavior_tab(&mut self, ui: &mut egui::Ui) {
+        let theme = self.theme;
+
+        material::section_label(ui, tr("Mouse"), &theme);
+        group_card(ui, &theme, |ui| {
+            let desc = Some(tr("Otherwise double-click opens, a single click only selects"));
+            if switch_row_with(ui, "beh_single_click", icons::OPEN, tr("Open with a single click"), desc, &theme, self.settings.single_click_open).clicked() {
+                self.settings.single_click_open = !self.settings.single_click_open;
+                self.persist_settings();
+            }
+        });
+
+        material::section_label(ui, tr("Keyboard"), &theme);
+        group_card(ui, &theme, |ui| {
+            let desc = Some(tr("h j k l to move, g / G to jump, y to copy the path"));
+            if switch_row_with(ui, "beh_vim_keys", icons::KEYBOARD, tr("Vim navigation keys"), desc, &theme, self.settings.vim_keys).clicked() {
+                self.settings.vim_keys = !self.settings.vim_keys;
+                self.persist_settings();
+            }
+            let desc = Some(tr("Typing a name selects the matching file in the folder"));
+            if switch_row_with(ui, "beh_type_ahead", icons::TEXT_SEARCH, tr("Type to jump"), desc, &theme, self.settings.type_ahead).clicked() {
+                self.settings.type_ahead = !self.settings.type_ahead;
+                self.persist_settings();
+            }
+            let desc = Some(tr("Start typing to filter, without pressing / first"));
+            if switch_row_with(ui, "beh_type_to_filter", icons::SEARCH, tr("Type to filter"), desc, &theme, self.settings.type_to_filter).clicked() {
+                self.settings.type_to_filter = !self.settings.type_to_filter;
+                self.persist_settings();
+            }
+        });
+
+        material::section_label(ui, tr("Mouse and touchpad"), &theme);
+        group_card(ui, &theme, |ui| {
+            use crate::settings::{SCROLL_SPEED_DEFAULT, SCROLL_SPEED_SLIDER};
+            let marks = [(0.5, tr("Slow")), (SCROLL_SPEED_DEFAULT, tr("Default")), (1.5, tr("Fast")), (2.0, tr("Faster"))];
+            if material::marked_slider_row(ui, "beh_scroll_speed", icons::MOUSE, tr("Wheel scroll speed"), &theme, &mut self.settings.scroll_speed, SCROLL_SPEED_SLIDER, &marks, "×", Some(SCROLL_SPEED_DEFAULT)) {
+                self.persist_settings();
+            }
+            let desc = Some(tr("Swipe sideways with two fingers over the files to go back or forward"));
+            if switch_row_with(ui, "beh_swipe_navigation", icons::ARROW_BACK, tr("Swipe to go back and forward"), desc, &theme, self.settings.swipe_navigation).clicked() {
+                self.settings.swipe_navigation = !self.settings.swipe_navigation;
+                self.persist_settings();
+            }
+        });
+
+        material::section_label(ui, tr("Terminal"), &theme);
+        group_card(ui, &theme, |ui| {
+            let found = crate::fs::terminal::detect(&self.settings.terminal);
+            let hint = found.as_deref().map_or_else(|| tr("No terminal found").to_owned(), |t| trf("Detected: {}", &[&t]));
+            material::input_frame(&theme).show(ui, |ui| {
+                let mut command = self.settings.terminal.clone();
+                let resp = ui.add(
+                    egui::TextEdit::singleline(&mut command)
+                        .frame(egui::Frame::NONE)
+                        .desired_width(f32::INFINITY)
+                        .hint_text(hint)
+                        .font(egui::FontId::proportional(material::FONT_BODY)),
+                );
+                if resp.changed() {
+                    self.settings.terminal = command;
+                    self.persist_settings();
+                }
+            });
+            material::hint_label_inset(ui, tr("Command that opens a terminal; {} stands for the folder. Leave empty to find one automatically."), &theme, 14);
+        });
+
+        material::section_label(ui, tr("Templates"), &theme);
+        group_card(ui, &theme, |ui| {
+            let default_dir = crate::fs::templates::user_dir(None);
+            let mut path_str = self.settings.templates_dir.as_ref().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
+            let shown = if path_str.trim().is_empty() { default_dir.clone() } else { Some(PathBuf::from(path_str.trim())) };
+            let valid = path_str.trim().is_empty() || PathBuf::from(path_str.trim()).is_dir();
+            material::input_frame(&theme).show(ui, |ui| {
+                let resp = ui.add(
+                    egui::TextEdit::singleline(&mut path_str)
+                        .frame(egui::Frame::NONE)
+                        .desired_width(f32::INFINITY)
+                        .hint_text(default_dir.as_ref().map(|d| d.display().to_string()).unwrap_or_default())
+                        .text_color(if valid { theme.text } else { theme.red })
+                        .font(egui::FontId::proportional(material::FONT_BODY)),
+                );
+                if resp.changed() {
+                    self.settings.templates_dir = if path_str.trim().is_empty() { None } else { Some(PathBuf::from(path_str.trim())) };
+                    self.persist_settings();
+                }
+            });
+            let hint = tr("Files in this folder are offered when you create a new file.");
+            let open = material::control_row(ui, &theme, material::row_hint(hint, &theme), |ui| {
+                button(ui, "open_templates", Some(icons::FOLDER_OPEN), tr("Open templates folder"), &theme, ButtonKind::Tonal, shown.is_some()).clicked()
+            });
+            if open && let Some(dir) = shown {
+                // The folder is created on first use, so there is always somewhere to put templates
+                let _ = std::fs::create_dir_all(&dir);
+                self.pending_open = Some(dir);
+            }
+        });
+    }
+
+    fn plugins_tab(&mut self, ui: &mut egui::Ui) {
+        let theme = self.theme;
+
+        material::section_label(ui, tr("Bundled plugins"), &theme);
+        group_card(ui, &theme, |ui| {
+            for (id, icon, name, description, on) in self.plugins.catalog() {
+                if switch_row_with(ui, ("plugin", id), icon, name, Some(description), &theme, on).clicked() {
+                    self.plugins.set_enabled(id, !on);
+                    self.settings.plugins = self.plugins.enabled_map().clone();
+                    self.persist_settings();
+                    // Badges and menu entries come from the listing, which is read again
+                    self.reread_items();
+                }
+            }
+        });
+
+        if self.plugins.is_enabled("tags") {
+            material::section_label(ui, tr("Tags"), &theme);
+            group_card(ui, &theme, |ui| self.plugins.settings("tags", ui, &theme));
+        }
+
+        if self.plugins.is_enabled("actions") {
+            material::section_label(ui, tr("Custom actions"), &theme);
+            group_card(ui, &theme, |ui| {
+                let dir = crate::plugins::actions::dir();
+                let hint = tr("Each .json file or executable script in the actions folder becomes an entry in the context menu. The selected files are passed as arguments and in FILE_MANAGER_SELECTED_FILES.");
+                let open = material::control_row(ui, &theme, material::row_hint(hint, &theme), |ui| {
+                    button(ui, "open_actions", Some(icons::FOLDER_OPEN), tr("Open actions folder"), &theme, ButtonKind::Tonal, dir.is_some()).clicked()
+                });
+                if open && let Some(dir) = dir {
+                    let _ = std::fs::create_dir_all(&dir);
+                    self.pending_open = Some(dir);
+                }
+                self.plugins.settings("actions", ui, &theme);
+            });
+        }
+    }
+
+    fn keybindings_tab(
+        &mut self,
+        ui: &mut egui::Ui,
+        keybind_search: &mut String,
+        capture: &mut Option<(Action, Option<usize>)>,
+        conflict_warning: &mut Option<(String, Action, Action, Option<usize>)>,
+    ) {
+        let theme = self.theme;
+
+        // Top bar: Search box and Reset all to defaults
+        ui.horizontal(|ui| {
+            material::input_frame(&theme).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    material::input_icon(ui, icons::SEARCH, material::ICON_SM, theme.subtext1);
+                    ui.add(
+                        egui::TextEdit::singleline(keybind_search)
+                            .frame(egui::Frame::NONE)
+                            .desired_width(ui.available_width().min(210.0))
+                            .hint_text(tr("Search shortcuts"))
+                            .font(egui::FontId::proportional(material::FONT_BODY)),
+                    );
+                });
+            });
+
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if button(ui, "reset_all_keybinds", Some(icons::REFRESH), tr("Reset all"), &theme, ButtonKind::Tonal, true).clicked() {
+                    self.settings.keybinds.clear();
+                    self.persist_settings();
+                    *capture = None;
+                    *conflict_warning = None;
+                    self.capturing_key = false;
+                }
+            });
+        });
+
+        // Conflict warning banner
+        if let Some((binding, target_act, conf_act, target_idx)) = conflict_warning.clone() {
+            ui.add_space(4.0);
+            egui::Frame::new()
+                .fill(theme.with_alpha(theme.yellow, 30))
+                .corner_radius(CornerRadius::same(material::radius_md()))
+                .inner_margin(egui::Margin::symmetric(14, 10))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        material::inline_icon(ui, icons::INFO, material::ICON_MD, theme.yellow);
+                        ui.label(
+                            egui::RichText::new(trf(
+                                "“{}” is already used by “{}”. Replace it?",
+                                &[&keymap::display(&binding), &conf_act.label()],
+                            ))
+                            .size(material::FONT_BODY)
+                            .color(theme.text),
+                        );
+                    });
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        if button(ui, "conf_replace", Some(icons::CHECK), tr("Replace"), &theme, ButtonKind::Filled, true).clicked() {
+                            // 1. Remove from conflicting action
+                            let mut conf_bindings = keymap::bindings(&self.settings.keybinds, conf_act);
+                            conf_bindings.retain(|b| b != &binding);
+                            if conf_bindings == conf_act.default_bindings() {
+                                self.settings.keybinds.remove(conf_act.id());
+                            } else {
+                                self.settings.keybinds.insert(conf_act.id().to_string(), conf_bindings);
+                            }
+
+                            // 2. Add / replace in target action
+                            let mut target_bindings = keymap::bindings(&self.settings.keybinds, target_act);
+                            target_bindings.retain(|b| b != &binding);
+                            if let Some(idx) = target_idx {
+                                if idx < target_bindings.len() {
+                                    target_bindings[idx] = binding.clone();
+                                } else {
+                                    target_bindings.push(binding.clone());
+                                }
+                            } else {
+                                target_bindings.push(binding.clone());
+                            }
+                            if target_bindings == target_act.default_bindings() {
+                                self.settings.keybinds.remove(target_act.id());
+                            } else {
+                                self.settings.keybinds.insert(target_act.id().to_string(), target_bindings);
+                            }
+
+                            self.persist_settings();
+                            *conflict_warning = None;
+                            *capture = None;
+                            self.capturing_key = false;
+                        }
+                        if button(ui, "conf_cancel", None, tr("Cancel"), &theme, ButtonKind::Text, true).clicked() {
+                            *conflict_warning = None;
+                            *capture = None;
+                            self.capturing_key = false;
+                        }
+                    });
+                });
+            ui.add_space(4.0);
+        }
+
+        // Active key capture handler
+        if let Some((target_act, target_idx)) = *capture {
+            self.capturing_key = true;
+            let mut handled_key = None;
+            let mut cancel = false;
+            let mut remove_binding = false;
+
+            ui.input(|i| {
+                for event in &i.events {
+                    if let egui::Event::Key { key, pressed: true, repeat: false, modifiers, .. } = event {
+                        match key {
+                            egui::Key::Escape => {
+                                cancel = true;
+                                break;
+                            }
+                            egui::Key::Backspace | egui::Key::Delete if modifiers.is_none() && target_idx.is_some() => {
+                                remove_binding = true;
+                                break;
+                            }
+                            egui::Key::ShiftLeft | egui::Key::ShiftRight |
+                            egui::Key::ControlLeft | egui::Key::ControlRight |
+                            egui::Key::AltLeft | egui::Key::AltRight |
+                            egui::Key::SuperLeft | egui::Key::SuperRight => {
+                                // Bare modifier: ignore
+                                continue;
+                            }
+                            _ => {
+                                let formatted = keymap::format_binding(*key, *modifiers);
+                                handled_key = Some(formatted);
+                                break;
+                            }
+                        }
+                    }
+                }
+            });
+
+            if cancel {
+                *capture = None;
+                self.capturing_key = false;
+            } else if remove_binding {
+                if let Some(idx) = target_idx {
+                    let mut bindings = keymap::bindings(&self.settings.keybinds, target_act);
+                    if idx < bindings.len() {
+                        bindings.remove(idx);
+                        if bindings == target_act.default_bindings() {
+                            self.settings.keybinds.remove(target_act.id());
+                        } else {
+                            self.settings.keybinds.insert(target_act.id().to_string(), bindings);
+                        }
+                        self.persist_settings();
+                    }
+                }
+                *capture = None;
+                self.capturing_key = false;
+            } else if let Some(new_bind) = handled_key {
+                let mut conflicting = None;
+                for other_act in Action::ALL {
+                    if other_act == target_act {
+                        continue;
+                    }
+                    let other_bindings = keymap::bindings(&self.settings.keybinds, other_act);
+                    if other_bindings.contains(&new_bind) {
+                        conflicting = Some(other_act);
+                        break;
+                    }
+                }
+
+                if let Some(conf_act) = conflicting {
+                    *conflict_warning = Some((new_bind, target_act, conf_act, target_idx));
+                    *capture = None;
+                } else {
+                    let mut bindings = keymap::bindings(&self.settings.keybinds, target_act);
+                    if let Some(idx) = target_idx {
+                        if idx < bindings.len() {
+                            bindings[idx] = new_bind;
+                        } else {
+                            bindings.push(new_bind);
+                        }
+                    } else if !bindings.contains(&new_bind) {
+                        bindings.push(new_bind);
+                    }
+                    if bindings == target_act.default_bindings() {
+                        self.settings.keybinds.remove(target_act.id());
+                    } else {
+                        self.settings.keybinds.insert(target_act.id().to_string(), bindings);
+                    }
+                    self.persist_settings();
+                    *capture = None;
+                    self.capturing_key = false;
+                }
+            }
+        }
+
+        // Action list grouped by Action::group()
+        let search = keybind_search.trim().to_lowercase();
+        let groups = [tr("Navigation"), tr("View"), tr("Files")];
+
+        for group_name in groups {
+            let actions_in_group: Vec<Action> = Action::ALL
+                .into_iter()
+                .filter(|a| a.group() == group_name)
+                .filter(|a| {
+                    search.is_empty()
+                        || a.label().to_lowercase().contains(&search)
+                        || a.id().contains(&search)
+                        || group_name.to_lowercase().contains(&search)
+                })
+                .collect();
+
+            if actions_in_group.is_empty() {
+                continue;
+            }
+
+            material::section_label(ui, group_name, &theme);
+
+            group_card(ui, &theme, |ui| {
+            for action in actions_in_group {
+                let is_overridden = self.settings.keybinds.contains_key(action.id());
+
+                ui.horizontal(|ui| {
+                    ui.set_min_height(material::ENTRY_HEIGHT);
+                    ui.add_space(8.0);
+
+                    // Action label
+                    let label_color = if is_overridden { theme.mauve } else { theme.text };
+                    ui.label(egui::RichText::new(action.label()).size(material::FONT_BODY).color(label_color));
+
+                    // Per-action reset button if overridden
+                    if is_overridden
+                        && filled_icon_button(ui, ("rst_act", action.id()), icons::REFRESH, &theme, 22.0, tr("Reset to default"), None).clicked()
+                    {
+                        self.settings.keybinds.remove(action.id());
+                        self.persist_settings();
+                        if matches!(*capture, Some((a, _)) if a == action) {
+                            *capture = None;
+                            self.capturing_key = false;
+                        }
+                    }
+
+                    // Keycap pills aligned to right
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.add_space(6.0);
+                        // "+ Add" button
+                        let is_adding = *capture == Some((action, None));
+                        let add_label = if is_adding { tr("Press keys…") } else { tr("+ Add") };
+                        let (add_resp, _) = keycap_pill(ui, ("act_add", action.id()), add_label, &theme, is_adding, false);
+                        if add_resp.clicked() {
+                            if is_adding {
+                                *capture = None;
+                                self.capturing_key = false;
+                            } else {
+                                *capture = Some((action, None));
+                                *conflict_warning = None;
+                                self.capturing_key = true;
+                            }
+                        }
+
+                        // Existing bindings
+                        let current_bindings = keymap::bindings(&self.settings.keybinds, action);
+                        for (idx, bind_str) in current_bindings.iter().enumerate().rev() {
+                            let is_capturing_this = *capture == Some((action, Some(idx)));
+                            let shown = keymap::display(bind_str);
+                            let pill_text = if is_capturing_this { tr("Press keys…") } else { shown.as_str() };
+                            let (pill_resp, rem_clicked) = keycap_pill(
+                                ui,
+                                ("act_pill", action.id(), idx),
+                                pill_text,
+                                &theme,
+                                is_capturing_this,
+                                true,
+                            );
+
+                            if rem_clicked {
+                                let mut b = keymap::bindings(&self.settings.keybinds, action);
+                                if idx < b.len() {
+                                    b.remove(idx);
+                                    if b == action.default_bindings() {
+                                        self.settings.keybinds.remove(action.id());
+                                    } else {
+                                        self.settings.keybinds.insert(action.id().to_string(), b);
+                                    }
+                                    self.persist_settings();
+                                }
+                                if is_capturing_this {
+                                    *capture = None;
+                                    self.capturing_key = false;
+                                }
+                            } else if pill_resp.clicked() {
+                                if is_capturing_this {
+                                    *capture = None;
+                                    self.capturing_key = false;
+                                } else {
+                                    *capture = Some((action, Some(idx)));
+                                    *conflict_warning = None;
+                                    self.capturing_key = true;
+                                }
+                            }
+                        }
+                    });
+                });
+            }
+            });
+        }
+    }
+
+    fn applications_tab(&mut self, ui: &mut egui::Ui, picking: &mut Option<usize>, defaults: &mut Vec<Option<String>>) {
+        let theme = self.theme;
+        if defaults.is_empty() {
+            match apps::category_defaults() {
+                Some(found) => *defaults = found,
+                None => {
+                    material::hint_label(ui, tr("Loading…"), &theme);
+                    ui.ctx().request_repaint_after(std::time::Duration::from_millis(50));
+                    return;
+                }
+            }
+        }
+        material::section_label(ui, tr("Default applications"), &theme);
+        material::hint_label(ui, tr("The application that opens each kind of file. This changes the system-wide defaults."), &theme);
+        ui.spacing_mut().item_spacing.y = 2.0;
+        let installed = self.installed_apps();
+        for (idx, category) in apps::CATEGORIES.iter().enumerate() {
+            let current = defaults.get(idx).and_then(|d| d.as_deref()).and_then(|id| installed.iter().find(|a| a.id == id));
+            let value = current.map_or(tr("Not set"), |a| a.name.as_str());
+            let is_open = *picking == Some(idx);
+            if category_row(ui, ("cat_row", idx), category.icon, tr(category.label), value, &theme, is_open).clicked() {
+                *picking = if is_open { None } else { Some(idx) };
+            }
+            material::collapsible(ui, ("cat_collapse", idx), *picking == Some(idx), |ui| {
+                let default_app = defaults.get(idx).and_then(|d| d.as_deref());
+                let candidates = apps::apps_for(&installed, category.mimes[0], default_app);
+                let mut chosen: Option<&AppEntry> = None;
+                for app in &candidates {
+                    let probe = egui::Rect::from_min_size(ui.cursor().min, egui::vec2(ui.available_width(), 44.0));
+                    let tex = if ui.is_rect_visible(probe) { self.app_icon(ui.ctx(), app) } else { None };
+                    let on = defaults[idx].as_deref() == Some(app.id.as_str());
+                    if app_row(ui, ("cat_app", idx, &app.id), tex.as_ref(), &app.name, &theme, on).clicked() {
+                        chosen = Some(app);
+                    }
+                }
+                if candidates.is_empty() {
+                    material::hint_label(ui, tr("No installed application handles these files"), &theme);
+                }
+                if let Some(app) = chosen {
+                    apps::set_category_default(category, &app.id);
+                    defaults[idx] = Some(app.id.clone());
+                    self.set_toast(trf("{} is now the default for {}", &[&app.name, &tr(category.label).to_lowercase()]));
+                    *picking = None;
+                }
+                ui.add_space(4.0);
+            });
+        }
+    }
+}
+
+fn keycap_pill(
+    ui: &mut egui::Ui,
+    id_source: impl std::hash::Hash + std::fmt::Debug,
+    text: &str,
+    theme: &SerpantinumTheme,
+    capturing: bool,
+    can_remove: bool,
+) -> (egui::Response, bool) {
+    let font_id = egui::FontId::proportional(material::FONT_CAPTION);
+    let galley = ui.painter().layout_no_wrap(text.to_owned(), font_id, theme.text);
+    let remove_btn_w = if can_remove && !capturing { 20.0 } else { 0.0 };
+    let total_w = galley.size().x + 20.0 + remove_btn_w;
+
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(total_w, material::KEYCAP_HEIGHT), egui::Sense::click());
+    let id = ui.make_persistent_id(id_source);
+    if capturing && resp.has_focus() {
+        // Tab, arrows and Escape are keys to record (or cancel with), not focus movement
+        ui.memory_mut(|m| m.set_focus_lock_filter(resp.id, egui::EventFilter { tab: true, horizontal_arrows: true, vertical_arrows: true, escape: true }));
+    }
+    let fx = material::fx(ui, id, &resp, true, &material::FxSpec::CLICK);
+    let on = material::animate(ui.ctx(), id.with("cap"), capturing);
+    let r = material::scaled(rect, fx.scale);
+
+    // Flat tonal fill only: lighter on hover/press, accent tint while waiting for a key
+    let idle = material::lerp_color(theme.surface2, theme.text, 0.10 * fx.hover + 0.06 * fx.press);
+    let bg = material::lerp_color(idle, material::lerp_color(theme.surface2, theme.mauve, 0.2), on);
+    material::paint_fill(ui.painter(), r, CornerRadius::same(material::radius_sm()), bg, &fx);
+
+    let text_color = material::lerp_color(material::lerp_color(theme.subtext0, theme.text, fx.hover.max(fx.press)), theme.mauve, on);
+    let text_pos = Pos2::new(rect.left() + 10.0, rect.center().y - galley.size().y / 2.0);
+    ui.painter().galley(text_pos, galley, text_color);
+
+    let mut remove_clicked = false;
+    if can_remove && !capturing {
+        let remove_rect = Rect::from_center_size(Pos2::new(rect.right() - 12.0, rect.center().y), Vec2::splat(material::KEYCAP_HEIGHT - 4.0));
+        let remove = ui.interact(remove_rect, id.with("rm"), egui::Sense::click()).on_hover_text(tr("Remove shortcut"));
+        let rem_fx = material::fx(ui, id.with("rm"), &remove, true, &material::FxSpec::ICON);
+        let rem_r = material::scaled(remove_rect, rem_fx.scale);
+        let rem_bg = material::row_layer(&theme, &rem_fx);
+        material::paint_fill(ui.painter(), rem_r, material::pill(rem_r), rem_bg, &rem_fx);
+        material::paint_icon(ui.painter(), remove_rect.center(), icons::CLOSE, 10.0, material::lerp_color(theme.subtext1, theme.text, rem_fx.hover.max(rem_fx.press)));
+        remove_clicked = remove.clicked();
+    }
+
+    (resp, remove_clicked)
+}
+
+/// What a preset looks like on its own, without the accent the user picked.
+/// Two different entries of `ICON_SAMPLES`, by chance.
+fn pick_icon_card_samples() -> [usize; 2] {
+    use std::hash::{BuildHasher, Hasher};
+    let n = ICON_SAMPLES.len();
+    let roll = || std::collections::hash_map::RandomState::new().build_hasher().finish() as usize;
+    let a = roll() % n;
+    [a, (a + 1 + roll() % (n - 1)) % n]
+}
+
+fn preset_preview(id: &str) -> SerpantinumTheme {
+    SerpantinumTheme::from_settings(&Settings { theme: id.to_owned(), accent: None, ..Settings::default() })
+}
+
+/// What a theme of the user's is wider than the others by: the gap and the edit button beside its preview.
+const EDIT_ROOM: f32 = 50.0;
+/// The id of the "+" card, which makes a theme instead of picking one.
+const NEW_THEME: &str = "new-theme";
+
+#[derive(Clone, Copy, PartialEq)]
+enum CardKind {
+    Plain,
+    /// With an edit button beside the preview.
+    Editable,
+    /// A "+" in place of the preview.
+    Create,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn theme_card(
+    ui: &mut egui::Ui,
+    id_source: impl std::hash::Hash + std::fmt::Debug,
+    width: f32,
+    label: &str,
+    preview: &SerpantinumTheme,
+    theme: &SerpantinumTheme,
+    selected: bool,
+    kind: CardKind,
+) -> (egui::Response, bool) {
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, 82.0), egui::Sense::click());
+    let id = ui.make_persistent_id(id_source);
+    let fx = material::fx(ui, id, &resp, true, &material::FxSpec::CLICK);
+    let sel = material::animate(ui.ctx(), id.with("sel"), selected);
+    let r = material::scaled(rect, fx.scale);
+
+    let idle = material::lerp_color(theme.surface1, theme.surface2, fx.hover.max(fx.press * 0.8));
+    let selected_fill = material::lerp_color(theme.surface1, theme.mauve, 0.26 + fx.hover * 0.05);
+    let back = material::lerp_color(idle, selected_fill, sel);
+    material::paint_fill(ui.painter(), r, CornerRadius::same(material::radius_lg()), back, &fx);
+    // An editable card shows its preview with the edit button right beside it
+    let editable = kind == CardKind::Editable;
+    let swatch_rect = egui::Rect::from_min_size(r.min + egui::vec2(8.0, 8.0), egui::vec2(r.width() - 16.0 - if editable { EDIT_ROOM } else { 0.0 }, 46.0));
+    let painter = ui.painter();
+    painter.rect_filled(swatch_rect, CornerRadius::same(material::radius_md()), preview.base);
+    if kind == CardKind::Create {
+        // A plus on the plain tile, in the colors in use
+        let ink = material::lerp_color(preview.subtext1, preview.text, fx.hover);
+        material::paint_icon(painter, swatch_rect.center(), icons::ADD, 24.0, ink);
+    } else {
+        let bar = egui::Rect::from_min_size(swatch_rect.min + egui::vec2(6.0, 6.0), egui::vec2(swatch_rect.width() * 0.5, 34.0));
+        painter.rect_filled(bar, CornerRadius::same(material::radius_sm()), preview.surface1);
+        painter.rect_filled(
+            egui::Rect::from_min_size(bar.min + egui::vec2(6.0, 6.0), egui::vec2(bar.width() - 12.0, 6.0)),
+            CornerRadius::same(3),
+            preview.text,
+        );
+        painter.rect_filled(
+            egui::Rect::from_min_size(bar.min + egui::vec2(6.0, 16.0), egui::vec2((bar.width() - 12.0) * 0.6, 6.0)),
+            CornerRadius::same(3),
+            preview.subtext1,
+        );
+        painter.circle_filled(egui::pos2(swatch_rect.right() - 16.0, swatch_rect.center().y), 9.0, preview.mauve);
+    }
+    // Long names end in an ellipsis instead of running past the card
+    let mut edit = false;
+    if editable {
+        let size = 36.0;
+        let at = egui::Rect::from_center_size(egui::pos2(swatch_rect.right() + 8.0 + size / 2.0, swatch_rect.center().y), egui::vec2(size, size));
+        // A child of its own: a scope would also take its place in the row and push the next card away
+        let mut button = ui.new_child(egui::UiBuilder::new().max_rect(at));
+        edit = material::filled_icon_button(&mut button, id.with("edit"), icons::RENAME, theme, size, tr("Edit custom theme"), None).clicked();
+    }
+    let color = material::lerp_color(theme.subtext0, theme.text, sel.max(fx.hover));
+    let galley = material::truncated(ui, label, material::FONT_CAPTION, color, rect.width() - 12.0);
+    let pos = egui::pos2(rect.center().x - galley.size().x / 2.0, rect.bottom() - 13.0 - galley.size().y / 2.0);
+    ui.painter().galley(pos, galley, color);
+    (resp, edit)
+}
+
+/// A card showing a folder and a few file icons drawn in `style`, in the current palette.
+fn icon_style_card(
+    ui: &mut egui::Ui,
+    id_source: impl std::hash::Hash + std::fmt::Debug,
+    width: f32,
+    style: IconStyle,
+    theme: &SerpantinumTheme,
+    selected: bool,
+    samples: &[FileItem; 2],
+) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, 82.0), egui::Sense::click());
+    let id = ui.make_persistent_id(id_source);
+    let fx = material::fx(ui, id, &resp, true, &material::FxSpec::CLICK);
+    let sel = material::animate(ui.ctx(), id.with("sel"), selected);
+    let r = material::scaled(rect, fx.scale);
+
+    let idle = material::lerp_color(theme.surface1, theme.surface2, fx.hover.max(fx.press * 0.8));
+    let selected_fill = material::lerp_color(theme.surface1, theme.mauve, 0.26 + fx.hover * 0.05);
+    let back = material::lerp_color(idle, selected_fill, sel);
+    material::paint_fill(ui.painter(), r, CornerRadius::same(material::radius_lg()), back, &fx);
+    let stage = egui::Rect::from_min_size(r.min + egui::vec2(8.0, 8.0), egui::vec2(r.width() - 16.0, 46.0));
+    let painter = ui.painter().with_clip_rect(stage);
+    painter.rect_filled(stage, CornerRadius::same(material::radius_md()), theme.base);
+    let at = |x: f32| egui::pos2(stage.left() + stage.width() * x, stage.center().y);
+    icon_style::paint_folder(style, &painter, at(0.27), 30.0, theme.blue);
+    // Two kinds drawn by chance when Settings opens, the same on every card so the styles compare
+    for (item, x) in samples.iter().zip([0.6, 0.84]) {
+        let icon = material::item_icon_animated(item, theme, 0.0);
+        material::paint_item_icon_in(style, &painter, item, at(x), 20.0, icon, 1.0);
+    }
+    let color = material::lerp_color(theme.subtext0, theme.text, sel.max(fx.hover));
+    let galley = material::truncated(ui, style.label(), material::FONT_CAPTION, color, rect.width() - 12.0);
+    let pos = egui::pos2(rect.center().x - galley.size().x / 2.0, rect.bottom() - 13.0 - galley.size().y / 2.0);
+    ui.painter().galley(pos, galley, color);
+    resp
+}
+
+fn category_row(
+    ui: &mut egui::Ui,
+    id_source: impl std::hash::Hash + std::fmt::Debug,
+    icon: &str,
+    label: &str,
+    value: &str,
+    theme: &SerpantinumTheme,
+    open: bool,
+) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 44.0), egui::Sense::click());
+    let id = ui.make_persistent_id(id_source);
+    let fx = material::fx(ui, id, &resp, true, &material::FxSpec::ROW);
+    let sel = material::animate(ui.ctx(), id.with("open"), open);
+    let fill = material::lerp_color(
+        material::lerp_color(theme.surface1, theme.surface2, fx.hover.max(sel)),
+        material::lerp_color(theme.surface2, theme.text, 0.08),
+        fx.press,
+    );
+    material::paint_fill(ui.painter(), rect, material::pill(rect), fill, &fx);
+    material::paint_icon(
+        ui.painter(),
+        egui::pos2(rect.left() + material::INSET_ICON, rect.center().y),
+        icon,
+        material::ICON_MD,
+        material::lerp_color(theme.subtext0, theme.mauve, sel),
+    );
+    ui.painter().text(
+        egui::pos2(rect.left() + material::INSET_LABEL, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        label,
+        egui::FontId::proportional(material::FONT_BODY),
+        theme.text,
+    );
+    let chevron = if open { icons::ARROW_UP } else { icons::CHEVRON_RIGHT };
+    material::paint_icon(
+        ui.painter(),
+        egui::pos2(rect.right() - 22.0, rect.center().y),
+        chevron,
+        material::ICON_SM,
+        material::lerp_color(theme.subtext1, theme.text, fx.hover.max(sel)),
+    );
+    ui.painter().text(
+        egui::pos2(rect.right() - 42.0, rect.center().y),
+        egui::Align2::RIGHT_CENTER,
+        value,
+        egui::FontId::proportional(material::FONT_CAPTION),
+        theme.subtext1,
+    );
+    resp
+}

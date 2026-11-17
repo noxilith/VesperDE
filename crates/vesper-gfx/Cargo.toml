@@ -1,0 +1,11 @@
+[package]
+name = "vesper-gfx"
+description = "Tiny software drawing helpers for Vesper shell components (rounded shapes, text, images)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ab_glyph = "0.2"
+fontdb = "0.24"
+tracing.workspace = true

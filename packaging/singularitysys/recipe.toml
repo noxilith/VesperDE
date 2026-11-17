@@ -1,0 +1,33 @@
+# DRAFT, cannot build yet: SingularitySYS has no recipes for the graphics/input stack this needs
+# (see "Blocked on" below). The layout follows recipes/dbus/recipe.toml.
+#
+# Blocked on (recipes that don't exist yet): rust (cargo), libxkbcommon, libinput, libseat (seatd),
+# libdrm, mesa (EGL, GLES, GBM), wayland, libudev (comes with systemd), mtdev, libevdev.
+# The file manager (a fork of Ski, in file-manager/) draws with egui and OpenGL and loads wayland, xkbcommon and EGL
+# at run time: no GTK needed.
+# Runtime: a seat provider (elogind or systemd-logind, or seatd), dbus.
+name        = "vesper"
+version     = "0.1.0"
+description = "Vesper desktop environment: Rust Wayland compositor with scrollable tiling"
+license     = "GPL-3.0-or-later"
+libc        = ["glibc"]
+
+[depends]
+build = ["bash", "dash", "coreutils", "sed", "grep", "findutils", "tar", "gzip", "make", "binutils", "gcc", "glibc",
+         "linux-headers", "pkgconf", "rust", "libxkbcommon", "libinput", "libseat", "libdrm", "mesa", "wayland", "systemd"]
+run   = ["libxkbcommon", "libinput", "libseat", "libdrm", "mesa", "wayland", "dbus"]
+
+# Release tarball with crates vendored (`cargo vendor` + .cargo/config.toml), so the build needs no network.
+# TODO: fill in once the first tagged release exists.
+[[source]]
+url    = "https://github.com/noxilith/VesperDE/releases/download/v0.1.0/vesper-0.1.0-vendored.tar.xz"
+sha256 = "TODO"
+
+[build]
+compile = '''
+cargo build --release --frozen -j $JOBS
+cargo build --release --frozen -j $JOBS --manifest-path file-manager/Cargo.toml
+'''
+install = '''
+make DESTDIR=$DESTDIR PREFIX=/usr install
+'''

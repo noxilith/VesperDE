@@ -1,0 +1,15 @@
+#!/bin/sh
+# Layer-shell smoke test: start mako (a layer-shell client) and send it one notification.
+# Run inside a Vesper terminal.
+set -u
+command -v mako >/dev/null || { echo "mako is not installed"; exit 1; }
+pgrep -x mako >/dev/null || { mako >/dev/null 2>&1 & sleep 1; }
+if command -v notify-send >/dev/null; then
+    notify-send "Hello" "layer-shell works"
+elif command -v gdbus >/dev/null; then
+    gdbus call --session --dest org.freedesktop.Notifications --object-path /org/freedesktop/Notifications \
+        --method org.freedesktop.Notifications.Notify vesper 0 "" "Hello" "layer-shell works" "[]" "{}" 8000
+else
+    busctl --user call org.freedesktop.Notifications /org/freedesktop/Notifications \
+        org.freedesktop.Notifications Notify susssasa{sv}i vesper 0 "" "Hello" "layer-shell works" 0 0 8000
+fi

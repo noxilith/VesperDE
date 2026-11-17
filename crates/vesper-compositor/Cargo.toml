@@ -1,0 +1,40 @@
+[package]
+name = "vesper-compositor"
+description = "Vesper: Wayland compositor with niri-style scrollable tiling"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "vesper"
+path = "src/main.rs"
+
+[dependencies]
+vesper-config = { path = "../vesper-config" }
+vesper-ipc = { path = "../vesper-ipc" }
+serde_json = "1"
+toml.workspace = true
+tracing.workspace = true
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+png = "0.17"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+anyhow = "1"
+smithay-drm-extras = { version = "0.1", default-features = false }
+xcursor = "0.3"
+
+[dependencies.smithay]
+version = "0.7"
+default-features = false
+features = [
+    "desktop",
+    "wayland_frontend",
+    "backend_winit",
+    "backend_drm",
+    "backend_gbm",
+    "backend_egl",
+    "backend_libinput",
+    "backend_udev",
+    "backend_session_libseat",
+    "renderer_gl",
+    "xwayland",
+]

@@ -1,0 +1,37 @@
+#!/bin/sh
+# Start or stop a screen recording (the start menu's record button runs this).
+#   vesper-record            toggle: record the whole screen, or stop the running recording
+#   vesper-record region     toggle: pick a region first (slurp)
+# Needs wf-recorder (uses the compositor's wlr-screencopy). Recordings go to ~/Videos (XDG videos dir).
+# VESPER_RECORD_AUDIO=1 also records the default audio output.
+pid_file="${XDG_RUNTIME_DIR:-/tmp}/vesper-record.pid"
+say() { command -v notify-send >/dev/null 2>&1 && notify-send -a "Screen recording" "$1" "$2"; }
+
+if [ -f "$pid_file" ] && kill -0 "$(cat "$pid_file")" 2>/dev/null; then
+    kill -INT "$(cat "$pid_file")"   # wf-recorder finishes the file when interrupted
+    rm -f "$pid_file"
+    say "Recording saved" "$(cat "${pid_file}.out" 2>/dev/null)"
+    exit 0
+fi
+rm -f "$pid_file"
+
+if ! command -v wf-recorder >/dev/null 2>&1; then
+    say "Cannot record" "Install wf-recorder first."
+    exit 1
+fi
+dir="$(xdg-user-dir VIDEOS 2>/dev/null || true)"
+[ -n "$dir" ] || dir="$HOME/Videos"
+mkdir -p "$dir"
+out="$dir/Recording-$(date +%Y-%m-%d_%H-%M-%S).mp4"
+echo "$out" > "${pid_file}.out"
+
+args="-f $out"
+[ -n "$VESPER_RECORD_AUDIO" ] && args="$args -a"
+if [ "$1" = "region" ]; then
+    geometry="$(slurp)" || exit 0
+    args="$args -g \"$geometry\""
+fi
+# shellcheck disable=SC2086
+eval "wf-recorder $args" >/dev/null 2>&1 &
+echo $! > "$pid_file"
+say "Recording started" "Press the record button again to stop."

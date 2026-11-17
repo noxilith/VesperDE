@@ -1,0 +1,70 @@
+#!/bin/sh
+# Register the File Manager from this checkout as an app, so the launcher (Mod+Space) lists it and the bar can show its
+# icon. Only needed when running from the repository; `make install` installs a proper entry. Safe to run repeatedly.
+set -eu
+root="$(cd "$(dirname "$0")/.." && pwd)"
+profile="${1:-debug}"
+dir="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
+mkdir -p "$dir"
+entry="$dir/file-manager.desktop"
+tmp="$(mktemp)"
+cat > "$tmp" <<DESKTOP
+[Desktop Entry]
+Type=Application
+Name=File Manager
+GenericName=File Manager
+Comment=Browse and manage files (Vesper development build)
+Exec=$root/target/$profile/file-manager %U
+Icon=$root/file-manager/assets/logo.svg
+Terminal=false
+Categories=System;FileTools;FileManager;Utility;
+MimeType=inode/directory;
+StartupWMClass=file-manager
+DESKTOP
+if ! cmp -s "$tmp" "$entry" 2>/dev/null; then
+    mv "$tmp" "$entry"
+    echo "registered File Manager in $entry"
+else
+    rm -f "$tmp"
+fi
+
+# Settings (Mod+, opens it directly; this makes it show in the launcher too)
+entry="$dir/vesper-settings.desktop"
+tmp="$(mktemp)"
+cat > "$tmp" <<DESKTOP
+[Desktop Entry]
+Type=Application
+Name=Settings
+Comment=Configure displays, power, appearance, input and more (Vesper development build)
+Exec=$root/target/$profile/vesper-settings
+Icon=preferences-system
+Terminal=false
+Categories=Settings;
+DESKTOP
+if ! cmp -s "$tmp" "$entry" 2>/dev/null; then
+    mv "$tmp" "$entry"
+    echo "registered Settings in $entry"
+else
+    rm -f "$tmp"
+fi
+
+# Screen sharing: tell xdg-desktop-portal which backend serves a Vesper session and how the screen picker looks
+# (without `make install` these are not in /usr/share and /etc). Existing files are left alone.
+cfg="${XDG_CONFIG_HOME:-$HOME/.config}"
+if [ ! -e "$cfg/xdg-desktop-portal/vesper-portals.conf" ]; then
+    mkdir -p "$cfg/xdg-desktop-portal"
+    cp "$root/session/vesper-portals.conf" "$cfg/xdg-desktop-portal/vesper-portals.conf"
+    echo "installed $cfg/xdg-desktop-portal/vesper-portals.conf"
+fi
+if [ ! -e "$cfg/xdg-desktop-portal-wlr/config" ]; then
+    mkdir -p "$cfg/xdg-desktop-portal-wlr"
+    cp "$root/session/xdg-desktop-portal-wlr.config" "$cfg/xdg-desktop-portal-wlr/config"
+    echo "installed $cfg/xdg-desktop-portal-wlr/config"
+fi
+
+# File open/save dialogs: serve the FileChooser portal from this checkout's File Manager (the bundled Vesper portal map
+# points FileChooser at it). User-level D-Bus activation file + portal file; `make install` does the system-wide version.
+data="${XDG_DATA_HOME:-$HOME/.local/share}"
+mkdir -p "$data/xdg-desktop-portal/portals" "$data/dbus-1/services"
+sed 's#^UseIn=.*#UseIn=Vesper;Hyprland;sway;niri;river;Wayfire;labwc;wlroots;#' "$root/file-manager/assets/filemanager.portal" > "$data/xdg-desktop-portal/portals/filemanager.portal"
+printf '[D-BUS Service]\nName=org.freedesktop.impl.portal.desktop.filemanager\nExec=%s/target/%s/file-manager --portal\n' "$root" "$profile" > "$data/dbus-1/services/org.freedesktop.impl.portal.desktop.filemanager.service"

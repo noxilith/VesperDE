@@ -1,0 +1,10 @@
+# greetd configuration that uses the Vesper login screen. Copy it to /etc/greetd/config.toml (see docs/greeter.md).
+[terminal]
+# the virtual terminal the login screen runs on
+vt = 1
+
+[default_session]
+# the login screen is a tiny Vesper compositor with just the greeter in it
+command = "vesper --tty --greeter"
+# a dedicated, unprivileged account (greetd's packages create "greeter")
+user = "greeter"

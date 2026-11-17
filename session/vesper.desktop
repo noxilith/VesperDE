@@ -1,0 +1,8 @@
+[Desktop Entry]
+Name=Vesper
+Comment=Vesper desktop environment: scrollable tiling on Wayland
+Exec=vesper-session
+TryExec=vesper-session
+Type=Application
+DesktopNames=Vesper
+Keywords=wayland;compositor;tiling;

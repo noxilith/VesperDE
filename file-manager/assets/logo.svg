@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <title>File Manager</title>
+  <path d="M48 128a32 32 0 0 1 32-32h112l48 48h192a32 32 0 0 1 32 32v224a32 32 0 0 1-32 32H80a32 32 0 0 1-32-32z" fill="#6f61e0"/>
+  <path d="M48 192a32 32 0 0 1 32-32h352a32 32 0 0 1 32 32v192a32 32 0 0 1-32 32H80a32 32 0 0 1-32-32z" fill="#8b7bff"/>
+  <path d="M80 176h352" stroke="#b3a8ff" stroke-width="6" stroke-linecap="round" opacity=".55"/>
+</svg>

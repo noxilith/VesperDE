@@ -1,0 +1,18 @@
+{
+  "name": "Wallpaper (Vesper)",
+  "light": <* if {{is_dark_mode}} *>false<* else *>true<* endif *>,
+  "base": "{{colors.surface_container_lowest.default.hex}}",
+  "mantle": "{{colors.surface_container.default.hex}}",
+  "crust": "{{colors.surface.default.hex}}",
+  "text": "{{colors.on_surface.default.hex}}",
+  "subtext0": "{{colors.on_surface_variant.default.hex}}",
+  "subtext1": "{{colors.outline.default.hex}}",
+  "surface0": "{{colors.surface_container_high.default.hex}}",
+  "surface1": "{{colors.surface_container_highest.default.hex}}",
+  "surface2": "{{colors.surface_bright.default.hex}}",
+  "accent": "{{colors.primary.default.hex}}",
+  "peach": "{{colors.tertiary.default.hex}}",
+  "green": "{{colors.secondary.default.hex}}",
+  "red": "{{colors.error.default.hex}}",
+  "yellow": "{{colors.tertiary_fixed_dim.default.hex}}"
+}

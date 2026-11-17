@@ -1,0 +1,172 @@
+# Vesper configuration. Copy to ~/.config/vesper/config.toml
+# terminal = "foot"   # default: first of foot, kitty, alacritty, wezterm, xterm in PATH
+autostart = []
+
+[layout]
+gap          = 8
+column_width = 0.5
+workspaces   = 10
+dynamic_workspaces = false   # workspaces in use take the first places (unused ones move to the end)
+
+[input]
+# modifier = "super"   # or "alt"; default: super on a real session, alt when nested
+repeat_delay = 300
+repeat_rate  = 30
+focus_follows_mouse = false   # hovering a window focuses it
+warp_mouse_on_focus  = false   # Mod+arrows move the pointer to the focused window
+
+[shell]
+bar  = true           # start vesper-bar with the session
+notifications = true  # start vesper-notify (notification daemon) with the session
+wallpaper = true      # start vesper-wallpaper (does nothing unless [wallpaper] path is set)
+clipboard_history = true  # remember the last 25 copied texts for Mod+Shift+V (kept in the runtime directory, gone at logout)
+xwayland = true       # run Xwayland so X11 apps work (needs the Xwayland binary; false = Wayland only)
+polkit = true         # start vesper-polkit (password dialog for pkexec / admin prompts; needs polkit installed)
+
+[bar]
+height    = 32
+font      = "JetBrainsMono Nerd Font"
+font_size = 14.0
+icon_size = 0           # minimized-app icons in the bar centre; 0 = fit the bar
+style         = "fill"         # fill, detached, notch or islands
+border_width  = 1              # px; 0 = no border (fill: a line along the bottom, notch: sides and bottom, others: all round)
+border_color  = ""             # "#rrggbb"; empty = wallpaper accent
+border_blend  = false          # the border takes the bar opacity too
+workspace_style = "dots"      # dots, halo (filled shapes in a soft ring) or numbers
+workspace_mode  = "all"       # all, or occupied (only workspaces with windows and the current one)
+split_style    = "line"       # how a split looks: line, dots or dashes
+split_width    = 2            # px
+split_height   = 55           # percent of the bar height
+split_color    = ""           # "#rrggbb"; empty = muted outline colour
+split_spacing  = 10           # px of room on each side of a split (also the gap between islands)
+status_icons     = "ios"    # battery and wifi: "ios" (battery with the percentage inside, fan wifi) or "glyphs"
+system_icon       = "auto"   # "auto" (your distro logo), "none", "glyph:arch" (font logo), a logo name, or the path of an .svg/.png
+system_icon_size = 0            # pixels; 0 = item_icon_size plus 15%
+system_icon_accent = false   # paint the icon in the wallpaper accent colour (then system_icon_color is ignored)
+system_icon_color = ""       # recolour as "#rrggbb"; empty = the logo's own colours
+workspace_color = ""          # "#rrggbb"; empty = wallpaper accent
+workspace_inactive_color = ""  # "#rrggbb" for inactive workspaces; empty = muted default
+radius        = 14             # corner radius for detached, notch and islands
+margin_top    = 8              # gap above a detached or islands bar
+margin_side   = 12             # gap at the sides of a detached or islands bar
+notch_width   = 560            # width of the notch (it grows if the content needs more)
+opacity       = 100            # background opacity in percent; below 100 the wallpaper shows through
+blur          = false          # frosted glass behind the bar (needs opacity below 100)
+blur_strength = 30             # 1 (light) .. 100 (heavy)
+left_items    = ["system", "workspaces"]   # left to right; any item can sit in any section
+middle_items  = ["minimized"]              # left to right, centred
+right_items   = ["mic", "volume", "network", "battery", "clock", "bell"]  # drawn right to left; also "media", "tray", "keyboard", "brightness" (items with nothing to show are hidden)
+clock_24h     = true            # false = 12-hour with am/pm
+clock_seconds = false
+clock_date    = true            # weekday, day and month before the time
+show_title    = false           # focused window title in the middle of the bar
+osd           = true            # a small popup when the volume or brightness changes
+item_icon_size = 20           # one size (px) for every bar icon: battery, wifi, volume, bell, power, brightness, system logo, tray
+
+[input.touchpad]
+tap                  = true
+natural_scroll       = false     # libinput's own; leave off while swap_scroll is on
+swap_scroll          = true      # two-finger scroll direction swapped
+accel_speed          = 0.0       # -1.0 .. 1.0
+disable_while_typing = true
+click_method         = "clickfinger"   # or "buttonareas"; "" = device default
+middle_emulation     = false
+
+[input.mouse]
+natural_scroll = false
+accel_speed    = 0.0
+accel_profile  = "adaptive"      # or "flat"
+
+# Commands for the volume, brightness and media keys (defaults shown).
+[media]
+volume_up       = "wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 5%+"
+volume_down     = "wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-"
+volume_mute     = "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle"
+mic_mute        = "wpctl set-mute @DEFAULT_AUDIO_SOURCE@ toggle"
+brightness_up   = "brightnessctl set 5%+"
+brightness_down = "brightnessctl set 5%-"
+play_pause      = "playerctl play-pause"
+next            = "playerctl next"
+previous        = "playerctl previous"
+
+[wallpaper]
+path  = ""            # e.g. "~/Pictures/Wallpapers/forest.jpg"; empty = plain colour
+dir   = "~/Pictures/Wallpapers"   # folder the wallpaper changer (Mod+W) offers
+mode  = "fill"        # fill (cover and crop), fit, stretch, center
+color = "#14141a"     # behind the image, or the whole background when no image is set
+
+[idle]
+lock_after = 300      # lock the screen after this many seconds without input; 0 = never
+
+[screenshots]
+dir = "~/Pictures/Screenshots"
+ocr_lang = "eng"                       # language(s) for "copy text from the screen" (tesseract names, e.g. "eng+deu"); needs tesseract installed
+
+[lock]
+switch_user = "auto"   # "Switch user" button on the lock screen: auto (when SDDM/LightDM runs), never, or your own command
+
+[appearance]
+border_width   = 2       # 0 = no borders
+border_focus   = ""      # "#rrggbb"; empty = wallpaper accent
+border_unfocus = ""      # empty = muted palette colour
+border_tiled   = true
+corner_radius  = 12         # rounded window corners in px; 0 = square
+cursor_theme   = "Bibata-Modern-Classic"   # "" = the built-in arrow; Bibata and Phinger themes come with Vesper (see Settings > Appearance > Cursor)
+cursor_size    = 24                        # pixels
+night_light    = false      # warm, dimmer colours for the evening (monitor colour ramps; a tint if the driver refuses)
+night_light_strength = 35   # 1..100
+
+[blur]
+enabled  = true      # frosted-glass background behind listed windows
+strength   = 30        # 1 (light) .. 100 (heavy)
+brightness = 100       # percent; below 100 darkens the blurred background
+saturation = 100       # percent; 0 = grey
+apps     = []        # application ids, e.g. ["kitty"]; Mod+B adds the focused window's app
+
+[animations]
+enabled     = true
+duration_ms = 220
+curve       = "ease-out"   # ease-out, ease-in-out, linear, spring
+
+[power]
+lid_close = "lock"                 # closing the lid: "lock", "suspend" or "ignore" (nothing while another monitor is connected)
+critical_battery_suspend = true       # suspend at 3% when not charging; warnings come at 20%, 10% and 5%
+screen_off_after  = 600    # seconds idle before the screens switch off; 0 = never
+suspend_after     = 0      # seconds idle before suspending; 0 = never
+lock_before_sleep = true
+power_key         = "menu" # menu, suspend, poweroff, ignore
+# suspend_command = "loginctl suspend"
+
+[notifications]
+history_max     = 100
+default_timeout = 6        # seconds; 0 = until clicked
+do_not_disturb  = false
+
+[apps]
+# file_manager = "file-manager"
+[launcher]
+# pinned = ["firefox", "org.gnome.Nautilus"]   # desktop-file ids; pin from the launcher with Ctrl+P or the star
+# gap    = 12                                     # pixels between the bar and the launcher
+# width  = 620
+
+
+# One table per monitor, named like in Settings (eDP-1, HDMI-A-1, ...). Everything is optional.
+# [display]
+# primary = "eDP-1"
+# [display.outputs."eDP-1"]
+# mode  = "2560x1600@165"
+# scale = 1.5
+# x = 0
+# y = 0
+# enabled = true
+
+# Colour theming is configured from the wallpaper changer (Mod+W, then F2 or the Theme button): matugen mode, scheme, contrast
+# and your own templates. Settings live in ~/.config/vesper/theme.toml and templates in ~/.config/vesper/matugen.toml.
+
+# Window rules: the first rule that matches a window is applied when it opens.
+# [[rules]]
+# app_id    = "pavucontrol"   # part of the app id, case-insensitive
+# float     = true
+# width     = 700             # floating size in pixels (0 = the usual size)
+# height    = 500
+# workspace = 0               # 1..10 opens it there without switching; 0 = the current workspace

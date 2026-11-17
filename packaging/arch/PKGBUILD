@@ -1,0 +1,42 @@
+# Maintainer: noxilith <noxilith@stier.gg>
+pkgname=vesper-git
+pkgver=0.1.0
+pkgrel=1
+pkgdesc='Vesper desktop environment: Rust Wayland compositor with scrollable tiling'
+arch=('x86_64' 'aarch64')
+url='https://github.com/noxilith/VesperDE'
+license=('GPL-3.0-or-later')
+depends=('libxkbcommon' 'libinput' 'libseat' 'mesa' 'libdrm' 'systemd-libs' 'wayland' 'noto-fonts-emoji')
+makedepends=('cargo' 'git' 'pkgconf')
+optdepends=('polkit: admin password prompts (vesper-polkit)' 'foot: default terminal' 'dbus: session bus for dbus-run-session' 'tesseract: copy text from the screen' 'tesseract-data-eng: English text recognition' 'brightnessctl: brightness scrolling in the bar' 'xdg-desktop-portal: portal service (file chooser, screen sharing)' 'xdg-desktop-portal-wlr: screen sharing for browsers, Discord, OBS, Zoom' 'pipewire: carries the shared screen' 'wireplumber: PipeWire session manager' 'slurp: monitor picker for xdg-desktop-portal-wlr' 'grim: command-line screenshots through wlr-screencopy' 'wf-recorder: screen recording (the start menu record button)' 'udisks2: mounting and ejecting removable drives' 'libnotify: notify-send for recording messages' 'greetd: the Vesper login screen (vesper-greeter)')
+provides=('vesper')
+conflicts=('vesper')
+source=("git+$url.git")
+sha256sums=('SKIP')
+
+pkgver() {
+  cd VesperDE
+  printf '%s.r%s.%s' "$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)" \
+    "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
+}
+
+prepare() {
+  cd VesperDE
+  cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+  cd VesperDE
+  export RUSTUP_TOOLCHAIN=stable CARGO_TARGET_DIR=target
+  make build
+}
+
+check() {
+  cd VesperDE
+  make test
+}
+
+package() {
+  cd VesperDE
+  make DESTDIR="$pkgdir" PREFIX=/usr install
+}

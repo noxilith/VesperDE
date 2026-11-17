@@ -1,0 +1,16 @@
+[package]
+name = "vesper-greeter"
+description = "Vesper login screen: a greetd greeter (run it with `vesper --greeter` as greetd's session command)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+vesper-config = { path = "../vesper-config" }
+vesper-gfx = { path = "../vesper-gfx" }
+anyhow = "1"
+serde_json = "1"
+tracing.workspace = true
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+smithay-client-toolkit = "0.20"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }

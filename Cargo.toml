@@ -1,0 +1,68 @@
+[workspace]
+resolver = "2"
+members = ["crates/vesper-config", "crates/vesper-ipc", "crates/vesper-compositor", "crates/vesper-bar", "crates/vesper-gfx", "crates/vesper-apps", "crates/vesper-launcher", "crates/vesper-notify", "crates/vesper-wallpaper", "crates/vesper-lock", "crates/vesper-screenshot", "crates/vesper-wallpaper-picker", "crates/vesper-theme", "crates/vesper-settings", "crates/vesper-power", "crates/vesper-polkit", "crates/vesper-switcher", "crates/vesper-greeter"]
+# The file manager is a fork of Ski (https://github.com/ilyamiro/Ski): its own project with its own lockfile.
+exclude = ["file-manager"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/noxilith/VesperDE"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+tracing = "0.1"
+
+[profile.release]
+lto = "thin"
+codegen-units = 4
+strip = true
+
+# Debug builds of the compositor are fine, but font parsing, SVG rendering and the like are
+# unusably slow unoptimised: always optimise dependencies.
+[profile.dev.package."*"]
+opt-level = 3
+
+# Our own drawing code runs per pixel (animations), so keep it fast in debug builds too.
+[profile.dev.package.vesper-gfx]
+opt-level = 3
+
+[profile.dev.package.vesper-wallpaper]
+opt-level = 3
+
+# Every UI client redraws pixel by pixel; optimise them in debug builds too so animations run at full speed.
+[profile.dev.package.vesper-wallpaper-picker]
+opt-level = 3
+
+[profile.dev.package.vesper-settings]
+opt-level = 3
+
+[profile.dev.package.vesper-launcher]
+opt-level = 3
+
+[profile.dev.package.vesper-switcher]
+opt-level = 3
+
+[profile.dev.package.vesper-notify]
+opt-level = 3
+
+[profile.dev.package.vesper-bar]
+opt-level = 3
+
+[profile.dev.package.vesper-lock]
+opt-level = 3
+
+[profile.dev.package.vesper-power]
+opt-level = 3
+
+[profile.dev.package.vesper-polkit]
+opt-level = 3
+
+[profile.dev.package.vesper-screenshot]
+opt-level = 3
+
+# The compositor composites every frame (borders, blur, rounded windows): keep it fast too.
+[profile.dev.package.vesper-compositor]
+opt-level = 2

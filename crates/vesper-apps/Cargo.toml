@@ -1,0 +1,10 @@
+[package]
+name = "vesper-apps"
+description = "Desktop entry lookup and icon loading for Vesper shell components"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+vesper-gfx = { path = "../vesper-gfx" }
+resvg = { version = "0.50", default-features = false }

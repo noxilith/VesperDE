@@ -1,0 +1,51 @@
+#!/bin/sh
+# Try Vesper from a bare tty (e.g. tty2) without installing anything.
+#
+#   1. Ctrl+Alt+F2, log in
+#   2. cd to this repo and run:  ./scripts/vesper-dev
+#   3. Quit with  Super+Shift+E   (or wait for the timeout)
+#   4. Ctrl+Alt+F1 returns to your other session while Vesper runs
+#
+# Env: VESPER_TIMEOUT=seconds (default 600, 0 = never) auto-exits so a hung test can't strand you.
+#      VESPER_PROFILE=release  build optimised (default: debug)
+#      VESPER_LOG=...          tracing filter (default: vesper=debug,smithay=info,warn)
+set -eu
+cd "$(dirname "$0")/.."
+
+if [ -n "${WAYLAND_DISPLAY:-}${DISPLAY:-}" ]; then
+    echo "You're inside a graphical session. This script is for a bare tty (Ctrl+Alt+F2)." >&2
+    echo "To test inside your current desktop use:  cargo run -- --winit" >&2
+    exit 1
+fi
+
+profile="${VESPER_PROFILE:-debug}"
+if [ "$profile" = release ]; then cargo build --release; cargo build --release --manifest-path file-manager/Cargo.toml; bin=target/release/vesper
+else cargo build; cargo build --manifest-path file-manager/Cargo.toml; bin=target/debug/vesper; fi
+
+./scripts/install-dev-entry "$profile"
+
+timeout="${VESPER_TIMEOUT:-600}"
+logdir="${XDG_STATE_HOME:-$HOME/.local/state}/vesper"
+mkdir -p "$logdir"
+log="$logdir/vesper.log"
+export RUST_LOG="${VESPER_LOG:-vesper=debug,smithay=info,warn}"
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+export XDG_SESSION_TYPE=wayland
+
+args="--tty"
+[ "$timeout" != 0 ] && args="$args --exit-after $timeout"
+
+echo "Starting Vesper (log: $log). Super+Return = terminal, Super+Shift+E = quit, Ctrl+Alt+F1 = back to tty1."
+if command -v dbus-run-session >/dev/null 2>&1 && [ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ]; then
+    # shellcheck disable=SC2086
+    dbus-run-session -- "$bin" $args >"$log" 2>&1 || status=$?
+else
+    # shellcheck disable=SC2086
+    "$bin" $args >"$log" 2>&1 || status=$?
+fi
+status="${status:-0}"
+if [ "$status" != 0 ]; then
+    echo "Vesper exited with status $status. Last log lines:" >&2
+    tail -n 25 "$log" | sed 's/\x1b\[[0-9;]*m//g' >&2
+fi
+exit "$status"

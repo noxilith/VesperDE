@@ -1,0 +1,9 @@
+[package]
+name = "vesper-theme"
+description = "Vesper theming from the command line: regenerate colours with matugen, show the palette"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+vesper-config = { path = "../vesper-config" }

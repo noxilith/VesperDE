@@ -1,0 +1,18 @@
+[package]
+name = "vesper-launcher"
+description = "Vesper app launcher: type to filter installed apps, Enter to run (layer-shell client)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+vesper-config = { path = "../vesper-config" }
+vesper-gfx = { path = "../vesper-gfx" }
+vesper-apps = { path = "../vesper-apps" }
+anyhow = "1"
+tracing.workspace = true
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+smithay-client-toolkit = "0.20"
+toml.workspace = true
+vesper-ipc = { path = "../vesper-ipc" }
+serde_json = "1"

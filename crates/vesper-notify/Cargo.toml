@@ -1,0 +1,17 @@
+[package]
+name = "vesper-notify"
+description = "Vesper notification daemon: org.freedesktop.Notifications on D-Bus, drawn with layer-shell"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+vesper-config = { path = "../vesper-config" }
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+vesper-gfx = { path = "../vesper-gfx" }
+vesper-apps = { path = "../vesper-apps" }
+anyhow = "1"
+tracing.workspace = true
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+smithay-client-toolkit = "0.20"
+zbus = "5"

@@ -2775,6 +2775,7 @@ version = "0.1.0"
 dependencies = [
  "ab_glyph",
  "fontdb",
+ "image",
  "tracing",
 ]
 
@@ -2784,7 +2785,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "chrono",
- "image",
  "serde_json",
  "smithay-client-toolkit 0.20.0",
  "tracing",

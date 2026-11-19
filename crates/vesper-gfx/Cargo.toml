@@ -6,6 +6,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
 ab_glyph = "0.2"
 fontdb = "0.24"
 tracing.workspace = true

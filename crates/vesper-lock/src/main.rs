@@ -72,6 +72,11 @@ struct Lock {
     auth_tx: channel::Sender<bool>,
 
     user: String,
+    /// Session name shown under the password field (locked, like the user).
+    session: String,
+    /// Background image, blur and dim, and the picture rendered for the current size.
+    bg_cfg: (String, u32, u32),
+    bg: Vec<(u32, u32, Option<Vec<u8>>)>,
     password: String,
     status: Status,
     big: Text,
@@ -131,9 +136,12 @@ fn run() -> Result<i32> {
         hover_switch: false,
         auth_tx,
         user,
+        session: std::env::var("XDG_CURRENT_DESKTOP").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "Vesper".into()),
+        bg_cfg: (config.login_background(true), config.greeter.blur, config.greeter.dim),
+        bg: Vec::new(),
         password: String::new(),
         status: Status::Idle,
-        big: text.resized(120.0),
+        big: text.resized(110.0),
         medium: text.resized(26.0),
         pal: Palette::load(),
         small: text.resized(17.0),
@@ -254,51 +262,66 @@ impl Lock {
         if w == 0 || h == 0 {
             return;
         }
+        if !self.bg.iter().any(|b| (b.0, b.1) == (w, h)) {
+            let (path, blur, dim) = &self.bg_cfg;
+            self.bg.push((w, h, vesper_gfx::backdrop::render(path, w, h, *blur, *dim)));
+        }
+        let picture = self.bg.iter().find(|b| (b.0, b.1) == (w, h)).and_then(|b| b.2.as_deref());
         let Ok((buffer, canvas)) = self.pool.create_buffer(w as i32, h as i32, w as i32 * 4, wl_shm::Format::Argb8888) else {
             return;
         };
         let mut c = Canvas::new(canvas, w, h);
-        // vertical gradient background: the surface colour fading towards a tint of the accent
-        let (top, bottom) = (self.pal.surface, {
-            let (a, b) = (self.pal.surface, self.pal.primary_container);
-            [0, 1, 2].map(|k| (a[k] as f32 + (b[k] as f32 - a[k] as f32) * 0.45) as u8)
-        });
-        for y in 0..h as i32 {
-            let t = y as f32 / h as f32;
-            let mix = |a: u8, b: u8| (a as f32 + (b as f32 - a as f32) * t) as u8;
-            let row = [mix(top[0], bottom[0]), mix(top[1], bottom[1]), mix(top[2], bottom[2]), 0xff];
-            c.fill_row(y, row);
+        // the same picture as the login screen: the wallpaper, blurred and darkened (a gradient if there is none)
+        if let Some(p) = picture {
+            c.copy_pixels(p);
+        } else {
+            let (top, bottom) = (self.pal.surface, {
+                let (a, b) = (self.pal.surface, self.pal.primary_container);
+                [0, 1, 2].map(|k| (a[k] as f32 + (b[k] as f32 - a[k] as f32) * 0.45) as u8)
+            });
+            for y in 0..h as i32 {
+                let t = y as f32 / h as f32;
+                let mix = |a: u8, b: u8| (a as f32 + (b as f32 - a as f32) * t) as u8;
+                c.fill_row(y, [mix(top[0], bottom[0]), mix(top[1], bottom[1]), mix(top[2], bottom[2]), 0xff]);
+            }
         }
 
+        // Same layout as the login screen (vesper-greeter), with the user and session fixed.
         let (cx, w, h) = (w as i32 / 2, w as i32, h as i32);
         let now = chrono::Local::now();
-        self.big.draw_centered(&mut c, cx, h * 36 / 100, &now.format("%H:%M").to_string(), self.pal.on_surface);
-        self.medium.draw_centered(&mut c, cx, h * 36 / 100 + 90, &now.format("%A, %-d %B").to_string(), self.pal.on_surface_variant);
+        self.big.draw_centered(&mut c, cx, h * 24 / 100, &now.format("%H:%M").to_string(), self.pal.on_surface);
+        self.medium.draw_centered(&mut c, cx, h * 24 / 100 + 84, &now.format("%A, %-d %B").to_string(), self.pal.on_surface_variant);
 
-        // name + password field
-        let field_y = h * 60 / 100;
-        self.small.draw_centered(&mut c, cx, field_y - 30, &self.user, self.pal.on_surface_variant);
-        let (fw, fh) = (340, 50);
+        let (fw, fh) = (360, 50);
         let fx = cx - fw / 2;
-        c.rounded_rect(fx - 2, field_y - 2, fw + 4, fh + 4, (fh / 2 + 2) as f32, if self.status == Status::Wrong { self.pal.error } else { self.pal.primary });
-        c.rounded_rect(fx, field_y, fw, fh, (fh / 2) as f32, self.pal.surface_container_high);
-        let mid = field_y + fh / 2;
+        let mut y = h * 50 / 100;
+        // the user: shown like the login field, but not editable
+        c.rounded_rect(fx - 2, y - 2, fw + 4, fh + 4, (fh / 2 + 2) as f32, self.pal.surface_container_high);
+        c.rounded_rect(fx, y, fw, fh, (fh / 2) as f32, self.pal.surface_container_high);
+        self.small.draw_centered(&mut c, cx, y + fh / 2, &self.small.fit(&self.user, fw - 40), self.pal.on_surface);
+        y += fh + 14;
+        // password
+        c.rounded_rect(fx - 2, y - 2, fw + 4, fh + 4, (fh / 2 + 2) as f32, if self.status == Status::Wrong { self.pal.error } else { self.pal.primary });
+        c.rounded_rect(fx, y, fw, fh, (fh / 2) as f32, self.pal.surface_container_high);
+        let mid = y + fh / 2;
         match self.status {
             Status::Checking => self.small.draw_centered(&mut c, cx, mid, "Checking…", self.pal.on_surface_variant),
             _ if self.password.is_empty() => self.small.draw_centered(&mut c, cx, mid, "Password", self.pal.on_surface_variant),
             _ => {
                 let n = self.password.chars().count().min(14) as i32;
-                let spacing = 22;
-                let start = cx - (n - 1) * spacing / 2;
+                let start = cx - (n - 1) * 22 / 2;
                 for k in 0..n {
-                    c.circle(start + k * spacing, mid, 6, self.pal.on_surface);
+                    c.circle(start + k * 22, mid, 6, self.pal.on_surface);
                 }
             }
         }
+        y += fh + 14;
+        // the session: fixed
+        self.small.draw_centered(&mut c, cx, y + 18, &self.session, self.pal.on_surface_variant);
+        y += 56;
         if self.status == Status::Wrong {
-            self.small.draw_centered(&mut c, cx, field_y + fh + 36, "Wrong password", self.pal.error);
+            self.small.draw_centered(&mut c, cx, y, "Wrong password", self.pal.error);
         }
-        let _ = w;
 
         if self.switch_cmd.is_some() {
             let (bx, by, bw, bh) = switch_button(w, h);

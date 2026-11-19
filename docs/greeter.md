@@ -51,3 +51,7 @@ dim        = 35   # darken, 0 to 90 percent
 The greeter runs as its own user, so it reads `/etc/vesper/config.toml`, not your personal config. The user field
 is a drop-down of the people on the machine (uid from `UID_MIN` in `/etc/login.defs`, a real login shell; `greeter`
 and `nobody` are left out). Click it, or press Up/Down while it is focused.
+
+The lock screen (`vesper-lock`) looks the same: same blurred background, clock and layout, with the user and session
+shown but fixed. It uses the same `[greeter]` settings, and follows the wallpaper picked in the changer (Mod+W)
+unless `background` is set.

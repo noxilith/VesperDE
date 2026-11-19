@@ -2,7 +2,6 @@
 //! to start the chosen session. Run it with `vesper --greeter` as greetd's session command.
 
 mod greetd;
-mod background;
 mod login;
 mod sessions;
 mod users;
@@ -152,7 +151,7 @@ fn run() -> Result<()> {
     if !users.contains(&user) {
         users.clear();
     }
-    let bg_path = if config.greeter.background.trim().is_empty() { config.wallpaper.path.clone() } else { config.greeter.background.clone() };
+    let bg_path = config.login_background(false);
     let text = Text::new(&config.bar.font, 18.0);
     let mut app = Greeter {
         registry_state: RegistryState::new(&globals),
@@ -354,7 +353,7 @@ impl Greeter {
         let Ok((buffer, canvas)) = self.pool.create_buffer(w as i32, h as i32, w as i32 * 4, wl_shm::Format::Argb8888) else { return };
         if self.bg.as_ref().map(|b| (b.0, b.1)) != Some((w, h)) {
             let (path, blur, dim) = &self.bg_cfg;
-            self.bg = Some((w, h, background::render(path, w, h, *blur, *dim)));
+            self.bg = Some((w, h, vesper_gfx::backdrop::render(path, w, h, *blur, *dim)));
         }
         let picture = self.bg.as_ref().and_then(|b| b.2.as_deref()).filter(|p| p.len() == canvas.len());
         if let Some(p) = picture {

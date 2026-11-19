@@ -1045,3 +1045,23 @@ pub fn intern(s: &str) -> &'static str {
     set.insert(leaked);
     leaked
 }
+
+impl Config {
+    /// The picture behind the login and lock screens: `[greeter] background`, else the wallpaper. The lock screen runs in
+    /// your session and so follows the wallpaper picked in the changer (`per_user`); the login screen has no user yet and
+    /// uses the configured one. A leading `~/` means your home folder.
+    pub fn login_background(&self, per_user: bool) -> String {
+        let path = if !self.greeter.background.trim().is_empty() {
+            self.greeter.background.clone()
+        } else {
+            match per_user.then(WallpaperChoice::load).flatten() {
+                Some(c) if !c.path.trim().is_empty() => c.path,
+                _ => self.wallpaper.path.clone(),
+            }
+        };
+        match (path.strip_prefix("~/"), std::env::var_os("HOME")) {
+            (Some(rest), Some(h)) => std::path::PathBuf::from(h).join(rest).to_string_lossy().into_owned(),
+            _ => path,
+        }
+    }
+}

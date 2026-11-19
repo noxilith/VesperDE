@@ -1,6 +1,8 @@
 //! Software drawing into a premultiplied ARGB8888 (little-endian BGRA) buffer, the format `wl_shm` calls
 //! `Argb8888`. Colours passed in are straight (non-premultiplied) RGBA.
 
+pub mod backdrop;
+
 pub type Rgba = [u8; 4];
 
 /// Premultiplied BGRA bytes for `c`, with its alpha scaled by `cov` (0..=255).
@@ -18,6 +20,13 @@ pub struct Canvas<'a> {
 impl<'a> Canvas<'a> {
     pub fn new(px: &'a mut [u8], w: u32, h: u32) -> Self {
         Self { px, w: w as i32, h: h as i32 }
+    }
+
+    /// Replace the whole picture with `src` (premultiplied BGRA, same size); ignored if the size differs.
+    pub fn copy_pixels(&mut self, src: &[u8]) {
+        if src.len() == self.px.len() {
+            self.px.copy_from_slice(src);
+        }
     }
 
     pub fn clear(&mut self, c: Rgba) {

@@ -34,6 +34,7 @@ install:
 	install -Dm755 target/release/vesper-polkit     $(DESTDIR)$(PREFIX)/bin/vesper-polkit
 	install -Dm755 target/release/vesper-greeter    $(DESTDIR)$(PREFIX)/bin/vesper-greeter
 	install -Dm644 session/greetd-vesper.toml       $(DESTDIR)$(PREFIX)/share/vesper/greetd-vesper.toml
+	install -Dm644 assets/wallpapers/singularity.jpg  $(DESTDIR)$(PREFIX)/share/vesper/wallpapers/singularity.jpg
 	install -Dm644 session/pam/vesper-lock          $(DESTDIR)/etc/pam.d/vesper-lock
 	install -Dm755 session/vesper-session          $(DESTDIR)$(PREFIX)/bin/vesper-session
 	install -Dm644 session/vesper.desktop          $(DESTDIR)$(PREFIX)/share/wayland-sessions/vesper.desktop
@@ -67,6 +68,7 @@ uninstall:
 	      $(DESTDIR)$(PREFIX)/share/dbus-1/services/org.freedesktop.impl.portal.desktop.filemanager.service \
 	      $(DESTDIR)$(PREFIX)/share/dbus-1/services/org.freedesktop.FileManager1.service
 	rm -rf $(DESTDIR)$(PREFIX)/share/licenses/file-manager
+	rm -rf $(DESTDIR)$(PREFIX)/share/vesper
 	rm -f $(DESTDIR)/etc/pam.d/vesper-lock
 
 .PHONY: all build test install uninstall

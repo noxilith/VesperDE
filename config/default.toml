@@ -6,13 +6,13 @@ autostart = []
 gap          = 8
 column_width = 0.5
 workspaces   = 10
-dynamic_workspaces = false   # workspaces in use take the first places (unused ones move to the end)
+dynamic_workspaces = true   # workspaces in use take the first places (unused ones move to the end)
 
 [input]
 # modifier = "super"   # or "alt"; default: super on a real session, alt when nested
 repeat_delay = 300
 repeat_rate  = 30
-focus_follows_mouse = false   # hovering a window focuses it
+focus_follows_mouse = true   # hovering a window focuses it
 warp_mouse_on_focus  = false   # Mod+arrows move the pointer to the focused window
 
 [shell]
@@ -24,48 +24,50 @@ xwayland = true       # run Xwayland so X11 apps work (needs the Xwayland binary
 polkit = true         # start vesper-polkit (password dialog for pkexec / admin prompts; needs polkit installed)
 
 [bar]
-height    = 32
+workspace_inactive_border = true
+splits = ["network", "bell", "workspaces", "system"]
+height    = 38
 font      = "JetBrainsMono Nerd Font"
 font_size = 14.0
 icon_size = 0           # minimized-app icons in the bar centre; 0 = fit the bar
 style         = "fill"         # fill, detached, notch or islands
 border_width  = 1              # px; 0 = no border (fill: a line along the bottom, notch: sides and bottom, others: all round)
-border_color  = ""             # "#rrggbb"; empty = wallpaper accent
-border_blend  = false          # the border takes the bar opacity too
-workspace_style = "dots"      # dots, halo (filled shapes in a soft ring) or numbers
-workspace_mode  = "all"       # all, or occupied (only workspaces with windows and the current one)
+border_color  = "#353535"             # "#rrggbb"; empty = wallpaper accent
+border_blend  = true          # the border takes the bar opacity too
+workspace_style = "halo"      # dots, halo (filled shapes in a soft ring) or numbers
+workspace_mode  = "occupied"       # all, or occupied (only workspaces with windows and the current one)
 split_style    = "line"       # how a split looks: line, dots or dashes
-split_width    = 2            # px
-split_height   = 55           # percent of the bar height
-split_color    = ""           # "#rrggbb"; empty = muted outline colour
-split_spacing  = 10           # px of room on each side of a split (also the gap between islands)
+split_width    = 1            # px
+split_height   = 45           # percent of the bar height
+split_color    = "#454545"           # "#rrggbb"; empty = muted outline colour
+split_spacing  = 14           # px of room on each side of a split (also the gap between islands)
 status_icons     = "ios"    # battery and wifi: "ios" (battery with the percentage inside, fan wifi) or "glyphs"
 system_icon       = "auto"   # "auto" (your distro logo), "none", "glyph:arch" (font logo), a logo name, or the path of an .svg/.png
 system_icon_size = 0            # pixels; 0 = item_icon_size plus 15%
-system_icon_accent = false   # paint the icon in the wallpaper accent colour (then system_icon_color is ignored)
+system_icon_accent = true   # paint the icon in the wallpaper accent colour (then system_icon_color is ignored)
 system_icon_color = ""       # recolour as "#rrggbb"; empty = the logo's own colours
 workspace_color = ""          # "#rrggbb"; empty = wallpaper accent
-workspace_inactive_color = ""  # "#rrggbb" for inactive workspaces; empty = muted default
-radius        = 14             # corner radius for detached, notch and islands
+workspace_inactive_color = "#656565"  # "#rrggbb" for inactive workspaces; empty = muted default
+radius        = 10             # corner radius for detached, notch and islands
 margin_top    = 8              # gap above a detached or islands bar
 margin_side   = 12             # gap at the sides of a detached or islands bar
 notch_width   = 560            # width of the notch (it grows if the content needs more)
-opacity       = 100            # background opacity in percent; below 100 the wallpaper shows through
+opacity       = 85            # background opacity in percent; below 100 the wallpaper shows through
 blur          = false          # frosted glass behind the bar (needs opacity below 100)
-blur_strength = 30             # 1 (light) .. 100 (heavy)
-left_items    = ["system", "workspaces"]   # left to right; any item can sit in any section
+blur_strength = 15             # 1 (light) .. 100 (heavy)
+left_items    = ["system", "workspaces", "media"]   # left to right; any item can sit in any section
 middle_items  = ["minimized"]              # left to right, centred
-right_items   = ["mic", "volume", "network", "battery", "clock", "bell"]  # drawn right to left; also "media", "tray", "keyboard", "brightness" (items with nothing to show are hidden)
-clock_24h     = true            # false = 12-hour with am/pm
+right_items   = ["clock", "bell", "battery", "network", "volume", "brightness", "mic", "tray"]  # drawn right to left; also "media", "tray", "keyboard", "brightness" (items with nothing to show are hidden)
+clock_24h     = false            # false = 12-hour with am/pm
 clock_seconds = false
-clock_date    = true            # weekday, day and month before the time
+clock_date    = false            # weekday, day and month before the time
 show_title    = false           # focused window title in the middle of the bar
 osd           = true            # a small popup when the volume or brightness changes
 item_icon_size = 20           # one size (px) for every bar icon: battery, wifi, volume, bell, power, brightness, system logo, tray
 
 [input.touchpad]
 tap                  = true
-natural_scroll       = false     # libinput's own; leave off while swap_scroll is on
+natural_scroll       = true      # libinput's own (the touchpad scrolls the natural way)
 swap_scroll          = true      # two-finger scroll direction swapped
 accel_speed          = 0.0       # -1.0 .. 1.0
 disable_while_typing = true
@@ -90,7 +92,7 @@ next            = "playerctl next"
 previous        = "playerctl previous"
 
 [wallpaper]
-path  = ""            # e.g. "~/Pictures/Wallpapers/forest.jpg"; empty = plain colour
+path  = "/usr/share/vesper/wallpapers/singularity.jpg"   # the wallpaper you start with; e.g. "~/Pictures/Wallpapers/forest.jpg"; empty = plain colour
 dir   = "~/Pictures/Wallpapers"   # folder the wallpaper changer (Mod+W) offers
 mode  = "fill"        # fill (cover and crop), fit, stretch, center
 color = "#14141a"     # behind the image, or the whole background when no image is set
@@ -110,9 +112,9 @@ border_width   = 2       # 0 = no borders
 border_focus   = ""      # "#rrggbb"; empty = wallpaper accent
 border_unfocus = ""      # empty = muted palette colour
 border_tiled   = true
-corner_radius  = 12         # rounded window corners in px; 0 = square
+corner_radius  = 8          # rounded window corners in px; 0 = square
 cursor_theme   = "Bibata-Modern-Classic"   # "" = the built-in arrow; Bibata and Phinger themes come with Vesper (see Settings > Appearance > Cursor)
-cursor_size    = 24                        # pixels
+cursor_size    = 28                        # pixels
 night_light    = false      # warm, dimmer colours for the evening (monitor colour ramps; a tint if the driver refuses)
 night_light_strength = 35   # 1..100
 

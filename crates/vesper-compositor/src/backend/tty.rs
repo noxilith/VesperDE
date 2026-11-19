@@ -553,6 +553,7 @@ impl Vesper {
         for ((crtc, output, _), pos) in placed.into_iter().zip(positions) {
             output.change_current_state(None, None, None, Some(pos.into()));
             self.space.map_output(&output, pos);
+            tracing::info!("output {} at {},{} {}x{} scale {}", output.name(), pos.0, pos.1, output.current_mode().map_or(0, |m| m.size.w), output.current_mode().map_or(0, |m| m.size.h), output.current_scale().fractional_scale());
             self.loop_handle.insert_idle(move |s| s.render(crtc));
         }
         // a monitor was added, removed or changed: windows and bars need new sizes

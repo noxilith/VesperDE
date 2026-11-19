@@ -46,6 +46,7 @@ impl WlrLayerShellHandler for Vesper {
             let mut map = layer_map_for_output(&output);
             let found = map.layers().find(|l| l.layer_surface() == &surface).cloned();
             if let Some(layer) = found {
+                tracing::info!("layer surface {:?} gone from {}", layer.namespace(), output.name());
                 map.unmap_layer(&layer);
                 drop(map);
                 self.layout_changed();

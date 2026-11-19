@@ -496,6 +496,13 @@ impl Config {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    #[test]
+    fn settings_never_write_to_etc() {
+        assert!(!Config::user_file().starts_with("/etc"), "{:?}", Config::user_file());
+    }
+
     #[test]
     fn dnd_schedule_wraps_midnight() {
         let n = Notifications { dnd_schedule: true, dnd_from: 22, dnd_to: 7, ..Default::default() };
@@ -763,14 +770,17 @@ pub struct Apps {
 }
 
 impl Config {
-    /// The file Settings writes to: the first existing config file, else `~/.config/vesper/config.toml`.
+    /// The file Settings writes to: `$VESPER_CONFIG`, else `~/.config/vesper/config.toml`. Never `/etc/vesper/config.toml`:
+    /// that is the system default, which a user cannot write (the first save copies it into the user's file).
     pub fn user_file() -> PathBuf {
         let paths = Self::candidate_paths();
+        let home = std::env::var_os("HOME").unwrap_or_default();
         paths
             .iter()
-            .find(|p| p.is_file())
+            .find(|p| std::env::var_os("VESPER_CONFIG").is_some_and(|v| p.as_os_str() == v))
+            .or_else(|| paths.iter().find(|p| !p.starts_with("/etc") && p.starts_with(&home)))
+            .or_else(|| paths.iter().find(|p| !p.starts_with("/etc")))
             .cloned()
-            .or_else(|| paths.into_iter().find(|p| p.starts_with(std::env::var_os("HOME").unwrap_or_default())))
             .unwrap_or_else(|| PathBuf::from("/tmp/vesper-config.toml"))
     }
 
@@ -778,7 +788,12 @@ impl Config {
     /// The compositor notices the new timestamp and applies it straight away.
     pub fn edit(f: impl FnOnce(&mut toml::Table)) -> std::io::Result<()> {
         let file = Self::user_file();
-        let mut table = std::fs::read_to_string(&file).ok().and_then(|t| t.parse::<toml::Table>().ok()).unwrap_or_default();
+        // the first save starts from the system default (/etc/vesper/config.toml), so the look you installed with is kept
+        let mut table = std::iter::once(file.clone())
+            .chain(Self::candidate_paths())
+            .find_map(|p| std::fs::read_to_string(p).ok())
+            .and_then(|t| t.parse::<toml::Table>().ok())
+            .unwrap_or_default();
         f(&mut table);
         // never write something the compositor would then reject
         let text = toml::to_string_pretty(&table).map_err(std::io::Error::other)?;

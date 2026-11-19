@@ -182,7 +182,9 @@ pub struct Vesper {
     pub xdg_foreign_state: smithay::wayland::xdg_foreign::XdgForeignState,
     pub primary_selection_state: smithay::wayland::selection::primary_selection::PrimarySelectionState,
     pub xdg_activation_state: smithay::wayland::xdg_activation::XdgActivationState,
+    #[allow(dead_code)] // kept alive: dropping the state removes the global
     pub xdg_toplevel_icon_state: smithay::wayland::xdg_toplevel_icon::XdgToplevelIconManager,
+    #[allow(dead_code)]
     pub text_input_state: smithay::wayland::text_input::TextInputManagerState,
     /// Winit backend: imports a dmabuf into its renderer to check it is usable.
     pub dmabuf_importer: Option<Box<dyn FnMut(&Dmabuf) -> bool>>,

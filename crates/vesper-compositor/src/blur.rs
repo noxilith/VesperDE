@@ -113,7 +113,11 @@ impl BlurState {
         style: Option<(&crate::round::RoundShaders, i32)>,
     ) -> Vec<Element> {
         let groups: Vec<&BlurGroup> = params.groups.iter().filter(|g| !g.rects.is_empty()).collect();
-        if groups.is_empty() || self.broken || size.w < DOWN * 4 || size.h < DOWN * 4 {
+        // an output with nothing to blur (the second monitor) must not throw away the copy another output still uses
+        if groups.is_empty() {
+            return Vec::new();
+        }
+        if self.broken || size.w < DOWN * 4 || size.h < DOWN * 4 {
             self.cache.clear();
             return Vec::new();
         }

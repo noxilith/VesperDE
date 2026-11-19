@@ -319,6 +319,10 @@ impl Vesper {
         let blur_params = self.blur_params(&output);
         let hint = self.hint_element(&output);
         let corner = self.config.appearance.corner_radius.clamp(0, 64);
+        let mut flags = FrameFlags::ALLOW_PRIMARY_PLANE_SCANOUT | FrameFlags::ALLOW_CURSOR_PLANE_SCANOUT;
+        if self.config.display.overlay_planes {
+            flags |= FrameFlags::ALLOW_OVERLAY_PLANE_SCANOUT;
+        }
         let (cursor_theme, cursor_size, cursor_scale) = (self.config.appearance.cursor_theme.clone(), self.config.appearance.cursor_size, output.current_scale().integer_scale().max(1) as u32);
         let Some(tty) = self.tty.as_mut() else { return };
         if !tty.cursor.is_for(&cursor_theme, cursor_size, cursor_scale) {
@@ -382,7 +386,7 @@ impl Vesper {
             }
         }
 
-        let queued = match surface.compositor.render_frame(renderer, &elements, CLEAR, FrameFlags::DEFAULT) {
+        let queued = match surface.compositor.render_frame(renderer, &elements, CLEAR, flags) {
             Ok(res) if !res.is_empty => match surface.compositor.queue_frame(()) {
                 Ok(()) => {
                     surface.pending = true;

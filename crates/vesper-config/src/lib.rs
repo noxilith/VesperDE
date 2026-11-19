@@ -653,6 +653,9 @@ pub struct Display {
     pub primary: String,
     /// Settings per connector name (`eDP-1`, `HDMI-A-1`, ...), e.g. `[display.outputs."eDP-1"]`.
     pub outputs: std::collections::BTreeMap<String, OutputConfig>,
+    /// Let the GPU scan windows and bars out on hardware overlay planes. Off by default: on some AMD setups with two monitors
+    /// the bar and popups vanish when planes are used.
+    pub overlay_planes: bool,
 }
 
 /// Sleep and power button.

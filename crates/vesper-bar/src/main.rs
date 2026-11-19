@@ -3,6 +3,7 @@
 //! Left: workspace pills (click to switch). Centre: focused window. Right: clock.
 
 mod bt;
+mod cmd;
 mod dbus;
 mod drives;
 mod draw;

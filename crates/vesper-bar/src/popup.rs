@@ -273,7 +273,7 @@ impl Popup {
 }
 
 fn run(cmd: &str, args: &[&str]) -> Option<String> {
-    let out = Command::new(cmd).args(args).output().ok()?;
+    let out = crate::cmd::output(Command::new(cmd).args(args)).ok()?;
     out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
@@ -433,9 +433,7 @@ fn battery_note() -> String {
 }
 
 fn read_wifi() -> Result<Vec<Wifi>, String> {
-    let out = Command::new("nmcli")
-        .args(["-t", "-f", "IN-USE,SSID,SIGNAL,SECURITY", "device", "wifi", "list", "--rescan", "no"])
-        .output()
+    let out = crate::cmd::output(Command::new("nmcli").args(["-t", "-f", "IN-USE,SSID,SIGNAL,SECURITY", "device", "wifi", "list", "--rescan", "no"]))
         .map_err(|_| "nmcli (NetworkManager) is not installed".to_string())?;
     if !out.status.success() {
         return Err("NetworkManager is not running".into());

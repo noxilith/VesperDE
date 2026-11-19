@@ -57,7 +57,7 @@ impl Quick {
 }
 
 fn out(cmd: &str, args: &[&str]) -> Option<String> {
-    let o = Command::new(cmd).args(args).output().ok()?;
+    let o = crate::cmd::output(Command::new(cmd).args(args)).ok()?;
     o.status.success().then(|| String::from_utf8_lossy(&o.stdout).into_owned())
 }
 

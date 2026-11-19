@@ -41,7 +41,7 @@ pub fn parse(json: &str) -> Vec<Drive> {
 }
 
 pub fn list() -> Vec<Drive> {
-    match Command::new("lsblk").args(["-J", "-o", "NAME,PATH,LABEL,SIZE,FSTYPE,MOUNTPOINT,RM,HOTPLUG,TYPE"]).output() {
+    match crate::cmd::output(Command::new("lsblk").args(["-J", "-o", "NAME,PATH,LABEL,SIZE,FSTYPE,MOUNTPOINT,RM,HOTPLUG,TYPE"])) {
         Ok(o) if o.status.success() => parse(&String::from_utf8_lossy(&o.stdout)),
         _ => Vec::new(),
     }

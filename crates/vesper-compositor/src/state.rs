@@ -158,6 +158,9 @@ pub struct Vesper {
     /// The Xwayland process watcher, kept so a restart can remove it, and how many restarts in a row have failed.
     pub xwayland_token: Option<smithay::reexports::calloop::RegistrationToken>,
     pub xwayland_restarts: u32,
+    /// Which start of Xwayland is current, and where its stderr reader reports that it ended.
+    pub xwayland_gen: u32,
+    pub xwayland_exit_tx: Option<smithay::reexports::calloop::channel::Sender<u32>>,
     pub xwayland_shell_state: smithay::wayland::xwayland_shell::XWaylandShellState,
     /// The X display number (`DISPLAY=:N`) once Xwayland is ready.
     pub x11_display: Option<u32>,
@@ -317,6 +320,8 @@ impl Vesper {
             xwm: None,
             xwayland_token: None,
             xwayland_restarts: 0,
+            xwayland_gen: 0,
+            xwayland_exit_tx: None,
             xwayland_shell_state: smithay::wayland::xwayland_shell::XWaylandShellState::new::<Self>(&display_handle_for_new),
             x11_display: None,
             or_windows: Vec::new(),

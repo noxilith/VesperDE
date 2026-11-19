@@ -166,7 +166,7 @@ fn read_notif() -> Notif {
 
 /// Is the default microphone live? None when there is no microphone.
 fn read_mic() -> Option<bool> {
-    let out = Command::new("wpctl").args(["get-volume", "@DEFAULT_AUDIO_SOURCE@"]).output().ok()?;
+    let out = crate::cmd::output(Command::new("wpctl").args(["get-volume", "@DEFAULT_AUDIO_SOURCE@"])).ok()?;
     if !out.status.success() {
         return None;
     }
@@ -175,7 +175,7 @@ fn read_mic() -> Option<bool> {
 }
 
 fn read_volume() -> Option<Volume> {
-    let out = Command::new("wpctl").args(["get-volume", "@DEFAULT_AUDIO_SINK@"]).output().ok()?;
+    let out = crate::cmd::output(Command::new("wpctl").args(["get-volume", "@DEFAULT_AUDIO_SINK@"])).ok()?;
     if !out.status.success() {
         return None;
     }

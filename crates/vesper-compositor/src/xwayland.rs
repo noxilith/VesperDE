@@ -68,6 +68,20 @@ impl Vesper {
         if let Some(token) = self.xwayland_token.take() {
             self.loop_handle.remove(token);
         }
+        // smithay stops looking at an Xwayland that dies before it is ready only if we tell it to; left alone its pipe stays
+        // readable forever and the event loop spins at 100% CPU. The reader of Xwayland's stderr sees the end of the process.
+        if self.xwayland_exit_tx.is_none() {
+            let (tx, rx) = smithay::reexports::calloop::channel::channel::<u32>();
+            let _ = self.loop_handle.insert_source(rx, |ev, _, state| {
+                if let smithay::reexports::calloop::channel::Event::Msg(gen) = ev {
+                    state.xwayland_exited(gen);
+                }
+            });
+            self.xwayland_exit_tx = Some(tx);
+        }
+        self.xwayland_gen += 1;
+        let gen = self.xwayland_gen;
+        let exit_tx = self.xwayland_exit_tx.clone();
         // Xwayland's own messages go to the session log; a crash is otherwise a bare "signal 6" with no reason.
         let stderr = match std::io::pipe() {
             Ok((rx, tx)) => {
@@ -77,6 +91,9 @@ impl Vesper {
                         if !line.trim().is_empty() {
                             tracing::warn!(target: "xwayland", "{line}");
                         }
+                    }
+                    if let Some(tx) = exit_tx {
+                        let _ = tx.send(gen);
                     }
                 });
                 std::process::Stdio::from(tx)
@@ -405,6 +422,21 @@ impl XwmHandler for Vesper {
             self.space.unmap_elem(&w);
         }
         self.layout_changed();
+        self.restart_xwayland();
+    }
+}
+
+impl Vesper {
+    /// The Xwayland of start number `gen` has ended. If it never got ready, drop its watcher (see `start_xwayland`) and
+    /// try again; if it was running, the window manager connection reports the loss and restarts it.
+    pub fn xwayland_exited(&mut self, gen: u32) {
+        if gen != self.xwayland_gen || self.xwm.is_some() {
+            return;
+        }
+        tracing::warn!("Xwayland ended before it was ready");
+        if let Some(token) = self.xwayland_token.take() {
+            self.loop_handle.remove(token);
+        }
         self.restart_xwayland();
     }
 }

@@ -38,6 +38,8 @@ impl WlrLayerShellHandler for Vesper {
         if let Err(err) = map.map_layer(&LayerSurface::new(surface, namespace)) {
             tracing::warn!("map_layer: {err}");
         }
+        drop(map);
+        self.dump_scene("layer surface added");
     }
 
     fn layer_destroyed(&mut self, surface: WlrLayerSurface) {
@@ -50,6 +52,7 @@ impl WlrLayerShellHandler for Vesper {
                 map.unmap_layer(&layer);
                 drop(map);
                 self.layout_changed();
+                self.dump_scene("layer surface gone");
                 // give the keyboard back to the focused window (focus changes were held back while the layer had it)
                 let f = self.layout.focused_window().cloned();
                 self.focus_window(f);
@@ -112,6 +115,9 @@ impl Vesper {
 
         // The exclusive zone may have changed, so re-tile.
         self.relayout();
+        if !initial_sent {
+            self.dump_scene("layer surface first commit");
+        }
         true
     }
 

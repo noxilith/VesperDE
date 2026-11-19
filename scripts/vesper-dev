@@ -28,6 +28,7 @@ timeout="${VESPER_TIMEOUT:-600}"
 logdir="${XDG_STATE_HOME:-$HOME/.local/state}/vesper"
 mkdir -p "$logdir"
 log="$logdir/vesper.log"
+export VESPER_NO_LOG_FILE=1  # this script writes the log itself
 export RUST_LOG="${VESPER_LOG:-vesper=debug,smithay=info,warn}"
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 export XDG_SESSION_TYPE=wayland

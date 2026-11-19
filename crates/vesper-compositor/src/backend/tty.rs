@@ -386,6 +386,8 @@ impl Vesper {
             }
         }
 
+        let n_elements = elements.len();
+        let mut render_failed = false;
         let queued = match surface.compositor.render_frame(renderer, &elements, CLEAR, flags) {
             Ok(res) if !res.is_empty => match surface.compositor.queue_frame(()) {
                 Ok(()) => {
@@ -394,15 +396,37 @@ impl Vesper {
                 }
                 Err(err) => {
                     tracing::warn!("queue_frame: {err}");
+                    render_failed = true;
                     false
                 }
             },
             Ok(_) => false,
             Err(err) => {
                 tracing::warn!("render_frame: {err}");
+                render_failed = true;
                 false
             }
         };
+
+        {
+            let st = self.render_stats.entry(output.name()).or_default();
+            match (queued, render_failed) {
+                (true, _) => st.queued += 1,
+                (false, true) => st.errors += 1,
+                (false, false) => st.empty += 1,
+            }
+            st.elements = n_elements;
+        }
+        if self.stats_logged.elapsed() >= Duration::from_secs(5) {
+            self.stats_logged = std::time::Instant::now();
+            let stats = std::mem::take(&mut self.render_stats);
+            if stats.values().any(|s| s.queued + s.errors > 0) {
+                let mut names: Vec<_> = stats.keys().cloned().collect();
+                names.sort();
+                let line: Vec<String> = names.iter().map(|n| { let s = stats[n]; format!("{n}: {} drawn, {} unchanged, {} errors, {} elements", s.queued, s.empty, s.errors, s.elements) }).collect();
+                tracing::info!("frames in the last 5 s: {}", line.join("; "));
+            }
+        }
 
         // Tell clients a frame happened so they can draw the next one. This must happen after every attempt, shown or not:
         // a client that asked for a callback and has nothing new on screen (Firefox while scrolling) would otherwise wait
@@ -565,6 +589,7 @@ impl Vesper {
         for o in outs {
             layer_map_for_output(&o).arrange();
         }
+        self.dump_scene("outputs changed");
         self.send_preferred_scales();
         self.relayout();
         self.ipc_broadcast();

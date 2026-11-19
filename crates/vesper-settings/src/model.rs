@@ -84,6 +84,8 @@ pub enum Ctl {
     Cursors { theme: String, size: u32 },
     /// One item of the bar: a switch to show it and arrows to move it left or right.
     BarItem { id: &'static str, shown: bool, left: bool, right: bool },
+    /// The monitors as boxes you drag to arrange them; `center` is the middle of their bounding box (logical pixels).
+    MonitorMap { mons: Vec<MapMon>, center: (f64, f64) },
     Info(String),
 }
 
@@ -290,6 +292,13 @@ fn display(snap: &Snapshot) -> Vec<Section> {
     };
     let mut out = Vec::new();
     let enabled = state.outputs.iter().filter(|o| o.enabled).count();
+    let mons: Vec<MapMon> = state.outputs.iter().filter(|o| o.enabled).map(|o| MapMon { name: o.name.clone(), x: o.x, y: o.y, w: o.w, h: o.h, primary: o.primary }).collect();
+    if mons.len() > 1 {
+        let (x0, y0) = (mons.iter().map(|m| m.x).min().unwrap_or(0), mons.iter().map(|m| m.y).min().unwrap_or(0));
+        let (x1, y1) = (mons.iter().map(|m| m.x + m.w).max().unwrap_or(0), mons.iter().map(|m| m.y + m.h).max().unwrap_or(0));
+        let center = ((x0 + x1) as f64 / 2.0, (y0 + y1) as f64 / 2.0);
+        out.push(section("Arrange monitors", vec![Row { title: String::new(), desc: String::new(), ctl: Ctl::MonitorMap { mons, center } }]));
+    }
     for o in &state.outputs {
         let key = |f: &str| format!("display.outputs.\"{}\".{f}", o.name);
         let mut rows = Vec::new();
@@ -1201,4 +1210,80 @@ fn plugins_page(snap: &Snapshot) -> Vec<Section> {
             }],
         ),
     ]
+}
+
+/// One monitor in the arrangement map (logical pixels).
+#[derive(Clone, Debug, PartialEq)]
+pub struct MapMon {
+    pub name: String,
+    pub x: i32,
+    pub y: i32,
+    pub w: i32,
+    pub h: i32,
+    pub primary: bool,
+}
+
+/// Where monitor `idx` lands when dropped near `(x, y)`: edges snap to the other monitors' edges within 40 px, and it
+/// never overlaps another monitor (it is pushed out along the shortest way).
+pub fn snap_position(mons: &[MapMon], idx: usize, x: i32, y: i32) -> (i32, i32) {
+    const NEAR: i32 = 40;
+    let me = &mons[idx];
+    let (mut bx, mut by) = (x, y);
+    let (mut dx, mut dy) = (NEAR + 1, NEAR + 1);
+    for (i, o) in mons.iter().enumerate().filter(|(i, _)| *i != idx) {
+        let _ = i;
+        for cand in [o.x - me.w, o.x + o.w, o.x, o.x + o.w - me.w] {
+            if (cand - x).abs() < dx {
+                dx = (cand - x).abs();
+                bx = cand;
+            }
+        }
+        for cand in [o.y - me.h, o.y + o.h, o.y, o.y + o.h - me.h] {
+            if (cand - y).abs() < dy {
+                dy = (cand - y).abs();
+                by = cand;
+            }
+        }
+    }
+    // push out of any monitor it still overlaps
+    for _ in 0..mons.len() {
+        let Some(o) = mons.iter().enumerate().filter(|(i, _)| *i != idx).map(|(_, o)| o).find(|o| bx < o.x + o.w && bx + me.w > o.x && by < o.y + o.h && by + me.h > o.y) else { break };
+        let moves = [(o.x - me.w - bx, 0), (o.x + o.w - bx, 0), (0, o.y - me.h - by), (0, o.y + o.h - by)];
+        let (mx, my) = moves.into_iter().min_by_key(|(a, b)| a.abs() + b.abs()).unwrap();
+        bx += mx;
+        by += my;
+    }
+    (bx, by)
+}
+
+/// Save a new arrangement: shifted so the top-left of all monitors is 0,0, and written for every monitor.
+pub fn apply_layout(mons: &[MapMon]) -> Result<(), String> {
+    let (minx, miny) = (mons.iter().map(|m| m.x).min().unwrap_or(0), mons.iter().map(|m| m.y).min().unwrap_or(0));
+    for m in mons {
+        for (f, v) in [("x", m.x - minx), ("y", m.y - miny)] {
+            Config::set(&format!("display.outputs.\"{}\".{f}", m.name), toml::Value::Integer(v as i64)).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod monitor_map_tests {
+    use super::*;
+
+    fn mon(name: &str, x: i32, y: i32, w: i32, h: i32) -> MapMon {
+        MapMon { name: name.into(), x, y, w, h, primary: false }
+    }
+
+    #[test]
+    fn snaps_next_to_a_neighbour_and_never_overlaps() {
+        let mons = vec![mon("A", 0, 0, 2560, 1440), mon("B", 2600, 100, 1920, 1080)];
+        // dropped 30 px off the right edge, 20 px below the top: sits flush against A, top aligned
+        assert_eq!(snap_position(&mons, 1, 2590, 20), (2560, 0));
+        // dropped on top of A: pushed out
+        let (x, y) = snap_position(&mons, 1, 1000, 300);
+        assert!(x >= 2560 || x + 1920 <= 0 || y >= 1440 || y + 1080 <= 0, "{x},{y}");
+        // far away: stays where it is
+        assert_eq!(snap_position(&mons, 1, 5000, 900), (5000, 900));
+    }
 }

@@ -473,6 +473,7 @@ impl Bar {
 
     /// Open the popup of `kind` under the bar item at `x` (or close it if that one is already open).
     fn toggle_popup(&mut self, kind: popup::Kind, x: f64) {
+        tracing::info!("popup {kind:?} clicked at x={x:.0}");
         if self.popup.as_ref().is_some_and(|p| p.pop.kind == kind) {
             self.close_popup();
             return;
@@ -486,6 +487,7 @@ impl Bar {
         layer.set_margin(self.height as i32, 0, 0, 0);
         layer.set_exclusive_zone(-1);
         layer.set_keyboard_interactivity(KeyboardInteractivity::None);
+        tracing::info!("popup {kind:?}: layer surface created");
         layer.commit();
         self.popup = Some(PopupWin { layer, w: 0, h: 0, configured: false, pop: popup::Popup::open(kind, anchor, &self.poller.sys) });
         if kind == popup::Kind::Start {
@@ -879,6 +881,7 @@ impl LayerShellHandler for Bar {
         }
         if self.popup.as_ref().is_some_and(|p| p.layer.wl_surface() == layer.wl_surface()) {
             self.close_popup();
+            tracing::warn!("the compositor closed the popup");
             return;
         }
         self.exit = true;
@@ -893,6 +896,7 @@ impl LayerShellHandler for Bar {
         if let Some(pw) = self.popup.as_mut().filter(|p| p.layer.wl_surface() == layer.wl_surface()) {
             pw.w = c.new_size.0;
             pw.h = c.new_size.1;
+            tracing::info!("popup configured {}x{}", c.new_size.0, c.new_size.1);
             pw.configured = true;
             self.popup_pool = None; // sized for the old screen
             self.redraw_popup();

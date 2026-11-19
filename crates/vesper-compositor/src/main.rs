@@ -1,3 +1,4 @@
+mod logfile;
 mod backend;
 mod blur;
 mod cursor;
@@ -68,6 +69,7 @@ fn main() -> Result<()> {
         }
     }
 
+    logfile::start();
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
         .init();

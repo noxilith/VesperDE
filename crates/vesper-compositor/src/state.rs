@@ -67,6 +67,9 @@ pub struct Vesper {
     pub just_redrew: bool,
     /// A throttled frame-callback timer is already armed (see `render` in the tty backend).
     pub frame_timer: bool,
+    /// Per-output frame counters, written to the log every few seconds (see `render`).
+    pub render_stats: std::collections::HashMap<String, RenderStats>,
+    pub stats_logged: std::time::Instant,
     pub round_tried: bool,
     /// Monitors are powered down by the idle timer.
     pub screens_off: bool,
@@ -255,6 +258,8 @@ impl Vesper {
             redraw_hook: None,
             just_redrew: false,
             frame_timer: false,
+            render_stats: std::collections::HashMap::new(),
+            stats_logged: std::time::Instant::now(),
             round_tried: false,
             screens_off: false,
             ptt_sym: None,
@@ -837,4 +842,33 @@ pub fn reap(mut child: std::process::Child) {
     std::thread::spawn(move || {
         let _ = child.wait();
     });
+}
+
+/// Frames per output since the last summary line in the log.
+#[derive(Default, Clone, Copy)]
+pub struct RenderStats {
+    pub queued: u32,
+    pub empty: u32,
+    pub errors: u32,
+    pub elements: usize,
+}
+
+impl Vesper {
+    /// Write the outputs, their layer surfaces (bar, wallpaper, popups) and the window count to the log. Called when a
+    /// layer surface or window appears or goes, so the log shows what the compositor thought the scene looked like.
+    pub fn dump_scene(&self, why: &str) {
+        let mut out = format!("scene ({why}): primary={:?}", self.output().map(|o| o.name()));
+        for o in self.space.outputs() {
+            let geo = self.space.output_geometry(o);
+            out += &format!("\n  output {} geo={:?} scale={}", o.name(), geo.map(|g| (g.loc.x, g.loc.y, g.size.w, g.size.h)), o.current_scale().fractional_scale());
+            let map = layer_map_for_output(o);
+            for l in map.layers() {
+                let g = map.layer_geometry(l).map(|g| (g.loc.x, g.loc.y, g.size.w, g.size.h));
+                out += &format!("\n    layer {:?} {:?} geo={:?}", l.namespace(), l.layer(), g);
+            }
+        }
+        let wins = self.space.elements().count();
+        out += &format!("\n  windows mapped={wins} workspace={} focus={:?}", self.layout.active, self.layout.focused_window().map(|w| crate::effects::app_id(w)));
+        tracing::info!("{out}");
+    }
 }

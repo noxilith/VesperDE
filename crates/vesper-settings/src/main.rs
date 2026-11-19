@@ -89,6 +89,8 @@ struct App {
     ipc_state: Option<State>,
     /// A slider being dragged: its hit rectangle and range.
     slider: Option<(ui::Rect, String, f64, f64, bool, i32)>,
+    /// A monitor box being dragged in the arrangement map: its index, the map area, scale and centre, and where inside the monitor the pointer grabbed it (logical px).
+    mon_drag: Option<(usize, ui::Rect, f64, (f64, f64), (f64, f64))>,
     slider_saved: Instant,
 }
 
@@ -162,6 +164,7 @@ fn main() -> Result<()> {
         stamps: (vesper_config::Config::stamp(), vesper_config::theme::ThemeSettings::stamp()),
         ipc_state: None,
         slider: None,
+        mon_drag: None,
         slider_saved: Instant::now(),
     };
 
@@ -447,6 +450,12 @@ impl App {
                 self.slider = Some((self.hits[i].0, path, min, max, int, pad));
                 self.slide(true);
             }
+            Hit::Monitor { idx, area, scale, center } => {
+                if let Some(m) = self.map_mons().and_then(|m| m.get(idx).cloned()) {
+                    let (lx, ly) = self.map_logical(area, scale, center);
+                    self.mon_drag = Some((idx, area, scale, center, (lx - m.x as f64, ly - m.y as f64)));
+                }
+            }
             Hit::Act(a) => self.act(a),
             Hit::CloseDrop => {
                 self.drop = None;
@@ -615,6 +624,10 @@ impl PointerHandler for App {
                         self.slide(false);
                         continue;
                     }
+                    if self.mon_drag.is_some() {
+                        self.drag_monitor();
+                        continue;
+                    }
                     let over = ui::hit_at(&self.hits, pos);
                     // redraw only when what is under the pointer changes (hover highlight)
                     if over != self.hover {
@@ -634,6 +647,9 @@ impl PointerHandler for App {
                     if self.slider.is_some() {
                         self.slide(true);
                         self.slider = None;
+                    }
+                    if self.mon_drag.take().is_some() {
+                        self.drop_monitor();
                     }
                 }
                 PointerEventKind::Axis { vertical, .. } => {
@@ -716,4 +732,41 @@ impl ProvidesRegistryState for App {
         &mut self.registry_state
     }
     registry_handlers![OutputState, SeatState];
+}
+
+impl App {
+    /// The monitors of the arrangement map on this page, if it has one.
+    fn map_mons(&mut self) -> Option<&mut Vec<model::MapMon>> {
+        self.page.sections.iter_mut().flat_map(|s| s.rows.iter_mut()).find_map(|r| match &mut r.ctl {
+            model::Ctl::MonitorMap { mons, .. } => Some(mons),
+            _ => None,
+        })
+    }
+
+    /// The pointer position in logical monitor pixels, for a map drawn in `area` at `scale` around `center`.
+    fn map_logical(&self, area: ui::Rect, scale: f64, center: (f64, f64)) -> (f64, f64) {
+        let (cx, cy) = (area.0 as f64 + area.2 as f64 / 2.0, area.1 as f64 + area.3 as f64 / 2.0);
+        (center.0 + (self.pointer_pos.0 - cx) / scale, center.1 + (self.pointer_pos.1 - cy) / scale)
+    }
+
+    /// Move the dragged monitor box with the pointer (nothing is saved until it is dropped).
+    fn drag_monitor(&mut self) {
+        let Some((idx, area, scale, center, grab)) = self.mon_drag else { return };
+        let (lx, ly) = self.map_logical(area, scale, center);
+        let Some(mons) = self.map_mons() else { return };
+        let (x, y) = model::snap_position(mons, idx, (lx - grab.0).round() as i32, (ly - grab.1).round() as i32);
+        mons[idx].x = x;
+        mons[idx].y = y;
+        self.redraw();
+    }
+
+    /// The monitor was dropped: save the arrangement.
+    fn drop_monitor(&mut self) {
+        let Some(mons) = self.map_mons().map(|m| m.clone()) else { return };
+        match model::apply_layout(&mons) {
+            Ok(()) => self.say("Monitor arrangement saved"),
+            Err(e) => self.say(format!("Could not save: {e}")),
+        }
+        self.reload();
+    }
 }

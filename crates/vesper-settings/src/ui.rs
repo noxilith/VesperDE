@@ -16,6 +16,8 @@ pub enum Hit {
     Edit { path: String, initial: String, numeric: Option<(f64, f64, bool)> },
     Slider { path: String, min: f64, max: f64, int: bool, pad: i32 },
     Drop { path: String, options: Vec<(Val, String)>, cur: Val, anchor: Rect },
+    /// A monitor box in the arrangement map: which one, the map area, pixels per logical pixel, and the map centre.
+    Monitor { idx: usize, area: Rect, scale: f64, center: (f64, f64) },
     Tab(usize),
     Act(Act),
     CloseDrop,
@@ -199,11 +201,18 @@ impl Ui<'_> {
     }
 
     fn row_h(&self, r: &crate::model::Row) -> i32 {
+        if matches!(r.ctl, Ctl::MonitorMap { .. }) {
+            return self.px(260);
+        }
         self.px(if r.desc.is_empty() { 54 } else { 66 })
     }
 
     fn draw_row(&self, c: &mut Canvas, row: &crate::model::Row, x: i32, y: i32, cw: i32, rh: i32, hits: &mut Vec<(Rect, Hit)>) {
         let (p, f) = (self.pal, self.fonts);
+        if let Ctl::MonitorMap { mons, center } = &row.ctl {
+            self.draw_map(c, mons, *center, x, y, cw, rh, hits);
+            return;
+        }
         let right = x + cw - self.px(20);
         let mid = y + rh / 2;
         let ctl_w = self.draw_ctl(c, &row.ctl, right, mid, hits);
@@ -332,6 +341,7 @@ impl Ui<'_> {
                 hits.push((r, Hit::Act(act.clone())));
                 w
             }
+            Ctl::MonitorMap { .. } => 0,
             Ctl::BarItem { id, shown, left, right: can_right } => {
                 // the show/hide switch on the far right, then the two arrows
                 let (tw, th) = (self.px(46), self.px(26));
@@ -467,4 +477,34 @@ fn cursor_preview(theme: &str, size: u32) -> Vec<Image> {
             })
             .clone()
     })
+}
+
+impl Ui<'_> {
+    /// The monitors as boxes you can drag; the one under the pointer lights up.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_map(&self, c: &mut Canvas, mons: &[crate::model::MapMon], center: (f64, f64), x: i32, y: i32, cw: i32, rh: i32, hits: &mut Vec<(Rect, Hit)>) {
+        let (p, f) = (self.pal, self.fonts);
+        let area = (x + self.px(16), y + self.px(12), cw - self.px(32), rh - self.px(52));
+        let span_w: f64 = mons.iter().map(|m| m.w as f64).sum::<f64>().max(1.0);
+        let span_h: f64 = mons.iter().map(|m| m.h as f64).fold(1.0, f64::max);
+        let scale = (area.2 as f64 * 0.85 / span_w).min(area.3 as f64 * 0.6 / span_h);
+        let (cx, cy) = (area.0 as f64 + area.2 as f64 / 2.0, area.1 as f64 + area.3 as f64 / 2.0);
+        c.rounded_rect(area.0, area.1, area.2, area.3, self.px(10) as f32, p.surface_container_high);
+        for (i, m) in mons.iter().enumerate() {
+            let r = (
+                (cx + (m.x as f64 - center.0) * scale).round() as i32,
+                (cy + (m.y as f64 - center.1) * scale).round() as i32,
+                ((m.w as f64 * scale).round() as i32).max(self.px(24)),
+                ((m.h as f64 * scale).round() as i32).max(self.px(16)),
+            );
+            let hot = inside(&r, self.pointer);
+            c.rounded_rect(r.0, r.1, r.2, r.3, self.px(6) as f32, if m.primary { p.primary } else { p.outline });
+            c.rounded_rect(r.0 + self.px(2), r.1 + self.px(2), r.2 - self.px(4), r.3 - self.px(4), self.px(5) as f32, if hot { p.primary_container } else { p.surface_container });
+            let label = format!("{}", i + 1);
+            f.title.draw_centered(c, r.0 + r.2 / 2, r.1 + r.3 / 2 - self.px(8), &label, if hot { p.on_primary_container } else { p.on_surface });
+            f.small.draw_centered(c, r.0 + r.2 / 2, r.1 + r.3 / 2 + self.px(16), &f.small.fit(&m.name, r.2 - self.px(8)), p.on_surface_variant);
+            hits.push((r, Hit::Monitor { idx: i, area, scale, center }));
+        }
+        f.small.draw_centered(c, x + cw / 2, y + rh - self.px(20), "Drag a monitor to place it. It snaps to the edges of the others.", p.on_surface_variant);
+    }
 }

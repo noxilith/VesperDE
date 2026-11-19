@@ -120,7 +120,8 @@ fn main() -> Result<()> {
         .args(["WAYLAND_DISPLAY", "XDG_CURRENT_DESKTOP", "XDG_SESSION_TYPE", "XDG_SESSION_DESKTOP", "VESPER_SOCKET"])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
-        .spawn();
+        .spawn()
+        .map(crate::state::reap);
 
     if let Some(secs) = exit_after {
         tracing::info!("will exit by itself after {secs}s");

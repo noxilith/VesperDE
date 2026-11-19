@@ -322,7 +322,7 @@ impl Vesper {
         let (cursor_theme, cursor_size, cursor_scale) = (self.config.appearance.cursor_theme.clone(), self.config.appearance.cursor_size, output.current_scale().integer_scale().max(1) as u32);
         let Some(tty) = self.tty.as_mut() else { return };
         if !tty.cursor.is_for(&cursor_theme, cursor_size, cursor_scale) {
-            tty.cursor = crate::cursor::CursorSet::load(&cursor_theme, cursor_size, cursor_scale);
+            tty.cursor = crate::cursor::CursorSet::reload(&tty.cursor, &cursor_theme, cursor_size, cursor_scale);
         }
         if !tty.session.is_active() {
             return;
@@ -403,14 +403,20 @@ impl Vesper {
         // Tell clients a frame happened so they can draw the next one. This must happen after every attempt, shown or not:
         // a client that asked for a callback and has nothing new on screen (Firefox while scrolling) would otherwise wait
         // for it and stall until something else woke us up.
-        let now = self.start_time.elapsed();
-        {
-            for w in self.space.elements() {
-                w.send_frame(&output, now, Some(Duration::ZERO), |_, _| Some(output.clone()));
-            }
-            for s in lock_surfaces.iter().flatten() {
-                smithay::desktop::utils::send_frames_surface_tree(s, &output, now, Some(Duration::ZERO), |_, _| Some(output.clone()));
-            }
+        // When nothing was queued this is throttled to one pass per 16 ms: a client that commits without damage and asks
+        // for a new callback each time would otherwise wake the loop again at once, and the loop would spin at 100% CPU.
+        if queued {
+            self.send_frames(&output, lock_surfaces.as_deref());
+        } else if !self.frame_timer {
+            self.frame_timer = true;
+            let _ = self.loop_handle.insert_source(Timer::from_duration(Duration::from_millis(16)), move |_, _, s| {
+                s.frame_timer = false;
+                if let Some(output) = s.tty.as_ref().and_then(|t| t.surfaces.get(&crtc)).map(|x| x.output.clone()) {
+                    let locks = s.lock_surfaces_for(&output);
+                    s.send_frames(&output, locks.as_deref());
+                }
+                TimeoutAction::Drop
+            });
         }
         self.popups.cleanup();
         let _ = self.display_handle.flush_clients();
@@ -420,6 +426,19 @@ impl Vesper {
         if !queued && self.animating() {
             self.schedule_render(crtc);
         }
+    }
+}
+
+impl Vesper {
+    fn send_frames(&mut self, output: &smithay::output::Output, locks: Option<&[smithay::reexports::wayland_server::protocol::wl_surface::WlSurface]>) {
+        let now = self.start_time.elapsed();
+        for w in self.space.elements() {
+            w.send_frame(output, now, Some(Duration::ZERO), |_, _| Some(output.clone()));
+        }
+        for s in locks.into_iter().flatten() {
+            smithay::desktop::utils::send_frames_surface_tree(s, output, now, Some(Duration::ZERO), |_, _| Some(output.clone()));
+        }
+        let _ = self.display_handle.flush_clients();
     }
 }
 

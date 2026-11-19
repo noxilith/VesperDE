@@ -61,6 +61,9 @@ pub struct CursorSet {
     scale: u32,
     arrow: MemoryRenderBuffer,
     shapes: HashMap<&'static str, Shape>,
+    /// A themed set that came out empty (files not there yet at session start?) is tried again a few times.
+    tries: u8,
+    loaded_at: std::time::Instant,
 }
 
 /// The shapes apps ask for (CSS cursor names; the theme's own aliases cover the old X names).
@@ -76,7 +79,7 @@ impl CursorSet {
     pub fn load(theme: &str, size: u32, scale: u32) -> Self {
         let size = size.clamp(12, 128);
         let scale = scale.max(1);
-        let mut set = CursorSet { theme: theme.to_owned(), size, scale, arrow: arrow(), shapes: HashMap::new() };
+        let mut set = CursorSet { theme: theme.to_owned(), size, scale, arrow: arrow(), shapes: HashMap::new(), tries: 0, loaded_at: std::time::Instant::now() };
         if theme.is_empty() {
             return set;
         }
@@ -104,9 +107,19 @@ impl CursorSet {
         set
     }
 
+    /// Load again after `prev` came out empty, remembering how often we tried.
+    pub fn reload(prev: &CursorSet, theme: &str, size: u32, scale: u32) -> Self {
+        let mut set = Self::load(theme, size, scale);
+        if prev.theme == theme {
+            set.tries = prev.tries + 1;
+        }
+        set
+    }
+
     /// Is this the set for these settings?
     pub fn is_for(&self, theme: &str, size: u32, scale: u32) -> bool {
-        self.theme == theme && self.size == size.clamp(12, 128) && self.scale == scale.max(1)
+        let stale = !self.theme.is_empty() && self.shapes.is_empty() && self.tries < 5 && self.loaded_at.elapsed() > std::time::Duration::from_secs(3);
+        !stale && self.theme == theme && self.size == size.clamp(12, 128) && self.scale == scale.max(1)
     }
 
     /// The image for a pointer shape and its hotspot in logical pixels (the built-in arrow when there is none).

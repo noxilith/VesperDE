@@ -65,6 +65,8 @@ pub struct Vesper {
     pub redraw_hook: Option<Box<dyn Fn()>>,
     /// Winit: the last pass of the event loop was only our own redraw, so it must not ask for another.
     pub just_redrew: bool,
+    /// A throttled frame-callback timer is already armed (see `render` in the tty backend).
+    pub frame_timer: bool,
     pub round_tried: bool,
     /// Monitors are powered down by the idle timer.
     pub screens_off: bool,
@@ -150,6 +152,9 @@ pub struct Vesper {
     pub clipboard_text: Option<String>,
     /// Xwayland's window manager, once it is up.
     pub xwm: Option<smithay::xwayland::X11Wm>,
+    /// The Xwayland process watcher, kept so a restart can remove it, and how many restarts in a row have failed.
+    pub xwayland_token: Option<smithay::reexports::calloop::RegistrationToken>,
+    pub xwayland_restarts: u32,
     pub xwayland_shell_state: smithay::wayland::xwayland_shell::XWaylandShellState,
     /// The X display number (`DISPLAY=:N`) once Xwayland is ready.
     pub x11_display: Option<u32>,
@@ -175,6 +180,10 @@ pub struct Vesper {
     #[allow(dead_code)] // owns the xdg-decoration global
     pub xdg_decoration_state: XdgDecorationState,
     pub xdg_foreign_state: smithay::wayland::xdg_foreign::XdgForeignState,
+    pub primary_selection_state: smithay::wayland::selection::primary_selection::PrimarySelectionState,
+    pub xdg_activation_state: smithay::wayland::xdg_activation::XdgActivationState,
+    pub xdg_toplevel_icon_state: smithay::wayland::xdg_toplevel_icon::XdgToplevelIconManager,
+    pub text_input_state: smithay::wayland::text_input::TextInputManagerState,
     /// Winit backend: imports a dmabuf into its renderer to check it is usable.
     pub dmabuf_importer: Option<Box<dyn FnMut(&Dmabuf) -> bool>>,
 }
@@ -196,6 +205,10 @@ impl Vesper {
         let layer_shell_state = WlrLayerShellState::new::<Self>(&dh);
         let xdg_decoration_state = XdgDecorationState::new::<Self>(&dh);
         let xdg_foreign_state = smithay::wayland::xdg_foreign::XdgForeignState::new::<Self>(&dh);
+        let primary_selection_state = smithay::wayland::selection::primary_selection::PrimarySelectionState::new::<Self>(&dh);
+        let xdg_activation_state = smithay::wayland::xdg_activation::XdgActivationState::new::<Self>(&dh);
+        let xdg_toplevel_icon_state = smithay::wayland::xdg_toplevel_icon::XdgToplevelIconManager::new::<Self>(&dh);
+        let text_input_state = smithay::wayland::text_input::TextInputManagerState::new::<Self>(&dh);
         let data_device_state = DataDeviceState::new::<Self>(&dh);
         let cursor_shape_state = smithay::wayland::cursor_shape::CursorShapeManagerState::new::<Self>(&dh);
         let mut seat_state = SeatState::new();
@@ -239,6 +252,7 @@ impl Vesper {
             round: None,
             redraw_hook: None,
             just_redrew: false,
+            frame_timer: false,
             round_tried: false,
             screens_off: false,
             ptt_sym: None,
@@ -294,6 +308,8 @@ impl Vesper {
             clipboard_png: None,
             clipboard_text: None,
             xwm: None,
+            xwayland_token: None,
+            xwayland_restarts: 0,
             xwayland_shell_state: smithay::wayland::xwayland_shell::XWaylandShellState::new::<Self>(&display_handle_for_new),
             x11_display: None,
             or_windows: Vec::new(),
@@ -311,6 +327,10 @@ impl Vesper {
             viewporter_state: Some(smithay::wayland::viewporter::ViewporterState::new::<Self>(&display_handle_for_new)),
             xdg_decoration_state,
             xdg_foreign_state,
+            primary_selection_state,
+            xdg_activation_state,
+            xdg_toplevel_icon_state,
+            text_input_state,
             dmabuf_importer: None,
         }
     }
@@ -808,4 +828,11 @@ impl Vesper {
             }
         });
     }
+}
+
+/// Wait for a child in a background thread so it never lingers as a zombie.
+pub fn reap(mut child: std::process::Child) {
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
 }

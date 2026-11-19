@@ -65,13 +65,31 @@ impl Vesper {
             tracing::info!("xwayland disabled in the config");
             return;
         }
+        if let Some(token) = self.xwayland_token.take() {
+            self.loop_handle.remove(token);
+        }
+        // Xwayland's own messages go to the session log; a crash is otherwise a bare "signal 6" with no reason.
+        let stderr = match std::io::pipe() {
+            Ok((rx, tx)) => {
+                std::thread::spawn(move || {
+                    use std::io::{BufRead, BufReader};
+                    for line in BufReader::new(rx).lines().map_while(Result::ok) {
+                        if !line.trim().is_empty() {
+                            tracing::warn!(target: "xwayland", "{line}");
+                        }
+                    }
+                });
+                std::process::Stdio::from(tx)
+            }
+            Err(_) => std::process::Stdio::null(),
+        };
         let spawned = XWayland::spawn(
             &self.display_handle,
-            None,
+            self.x11_display, // same display number again after a restart, so DISPLAY stays valid
             std::iter::empty::<(String, String)>(),
             true,
             std::process::Stdio::null(),
-            std::process::Stdio::null(),
+            stderr,
             |_| {},
         );
         let (xwayland, client) = match spawned {
@@ -96,8 +114,10 @@ impl Vesper {
                             .arg("DISPLAY")
                             .stdout(std::process::Stdio::null())
                             .stderr(std::process::Stdio::null())
-                            .spawn();
+                            .spawn()
+        .map(crate::state::reap);
                         state.x11_display = Some(display_number);
+                        state.xwayland_restarts = 0;
                     }
                     Err(err) => tracing::warn!("could not attach the X11 window manager: {err}"),
                 }
@@ -105,12 +125,30 @@ impl Vesper {
             XWaylandEvent::Error => {
                 tracing::warn!("Xwayland failed to start");
                 state.xwm = None;
-                state.x11_display = None;
+                state.restart_xwayland();
             }
         });
-        if let Err(err) = res {
-            tracing::warn!("could not watch Xwayland: {err}");
+        match res {
+            Ok(token) => self.xwayland_token = Some(token),
+            Err(err) => tracing::warn!("could not watch Xwayland: {err}"),
         }
+    }
+
+    /// Start Xwayland again after it died, one second later; gives up after five failures in a row.
+    fn restart_xwayland(&mut self) {
+        if self.xwayland_restarts >= 5 {
+            tracing::error!("Xwayland keeps failing; X11 apps will not run until the next login");
+            return;
+        }
+        self.xwayland_restarts += 1;
+        tracing::warn!("restarting Xwayland (attempt {})", self.xwayland_restarts);
+        let _ = self.loop_handle.insert_source(
+            smithay::reexports::calloop::timer::Timer::from_duration(std::time::Duration::from_secs(1)),
+            |_, _, s| {
+                s.start_xwayland();
+                smithay::reexports::calloop::timer::TimeoutAction::Drop
+            },
+        );
     }
 
     /// Tell Xwayland our clipboard changed (`None` = it is now empty), so X11 apps can paste what Wayland apps copied.
@@ -367,5 +405,6 @@ impl XwmHandler for Vesper {
             self.space.unmap_elem(&w);
         }
         self.layout_changed();
+        self.restart_xwayland();
     }
 }

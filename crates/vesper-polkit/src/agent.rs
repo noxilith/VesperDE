@@ -167,12 +167,45 @@ fn session_id(sys: &Connection) -> Option<String> {
     session.get_property::<String>("Id").ok()
 }
 
-fn register(sys: &Connection, session: &str) -> zbus::Result<()> {
+/// Who the agent registers for: the logind session, or (no logind session, e.g. PAM without `pam_systemd`) this process.
+#[derive(Debug, PartialEq)]
+enum Subject {
+    Session(String),
+    Process { pid: u32, start: u64 },
+}
+
+/// Start time (clock ticks since boot) of a process, field 22 of `/proc/<pid>/stat`. The command name in field 2 may
+/// contain spaces and parentheses, so count from the last `)`.
+fn proc_start_time(stat: &str) -> Option<u64> {
+    let rest = &stat[stat.rfind(')')? + 1..];
+    rest.split_whitespace().nth(19)?.parse().ok()
+}
+
+fn subject(sys: &Connection) -> Option<Subject> {
+    if let Some(id) = session_id(sys) {
+        return Some(Subject::Session(id));
+    }
+    let pid = std::process::id();
+    let start = proc_start_time(&std::fs::read_to_string("/proc/self/stat").ok()?)?;
+    Some(Subject::Process { pid, start })
+}
+
+fn register(sys: &Connection, who: &Subject) -> zbus::Result<()> {
     let authority = Proxy::new(sys, POLKIT, AUTHORITY, "org.freedesktop.PolicyKit1.Authority")?;
     let mut subject: HashMap<&str, Value> = HashMap::new();
-    subject.insert("session-id", Value::from(session));
+    let kind = match who {
+        Subject::Session(id) => {
+            subject.insert("session-id", Value::from(id.as_str()));
+            "unix-session"
+        }
+        Subject::Process { pid, start } => {
+            subject.insert("pid", Value::from(*pid));
+            subject.insert("start-time", Value::from(*start));
+            "unix-process"
+        }
+    };
     let locale = std::env::var("LANG").unwrap_or_else(|_| "en_US.UTF-8".into());
-    authority.call::<_, _, ()>("RegisterAuthenticationAgent", &(("unix-session", subject), locale, AGENT_PATH))
+    authority.call::<_, _, ()>("RegisterAuthenticationAgent", &((kind, subject), locale, AGENT_PATH))
 }
 
 fn owner(sys: &Connection) -> Option<String> {
@@ -197,12 +230,12 @@ pub fn run(tx: Sender<Msg>) {
     }
     let mut registered_with: Option<String> = None;
     loop {
-        match (owner(&sys), session_id(&sys)) {
-            (Some(o), Some(session)) => {
+        match (owner(&sys), subject(&sys)) {
+            (Some(o), Some(who)) => {
                 if registered_with.as_deref() != Some(o.as_str()) {
-                    match register(&sys, &session) {
+                    match register(&sys, &who) {
                         Ok(()) => {
-                            tracing::info!("registered as the polkit agent for session {session}");
+                            tracing::info!("registered as the polkit agent ({who:?})");
                             registered_with = Some(o);
                         }
                         Err(e) => tracing::warn!("polkit registration failed: {e}"),
@@ -214,7 +247,7 @@ pub fn run(tx: Sender<Msg>) {
                     tracing::warn!("polkitd went away; will register again when it is back");
                 }
             }
-            (_, None) => tracing::warn!("could not work out the logind session"),
+            (_, None) => tracing::warn!("could not work out who to register the polkit agent for"),
         }
         std::thread::sleep(Duration::from_secs(if registered_with.is_some() { 10 } else { 5 }));
     }
@@ -223,6 +256,12 @@ pub fn run(tx: Sender<Msg>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn start_time_survives_odd_command_names() {
+        let stat = "123 (my) prog) S 1 123 123 0 -1 4194304 100 0 0 0 1 2 0 0 20 0 1 0 987654 1000 100 18446744073709551615";
+        assert_eq!(proc_start_time(stat), Some(987654));
+    }
 
     #[test]
     fn parses_passwd_and_group_lines() {

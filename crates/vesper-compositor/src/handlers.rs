@@ -325,7 +325,8 @@ impl SeatHandler for Vesper {
     fn focus_changed(&mut self, seat: &Seat<Self>, focused: Option<&WlSurface>) {
         let dh = &self.display_handle;
         let client = focused.and_then(|s| dh.get_client(s.id()).ok());
-        set_data_device_focus(dh, seat, client);
+        set_data_device_focus(dh, seat, client.clone());
+        smithay::wayland::selection::primary_selection::set_primary_focus(dh, seat, client);
     }
 }
 
@@ -440,3 +441,37 @@ impl smithay::wayland::foreign_toplevel_list::ForeignToplevelListHandler for Ves
     }
 }
 smithay::delegate_foreign_toplevel_list!(Vesper);
+
+impl smithay::wayland::selection::primary_selection::PrimarySelectionHandler for Vesper {
+    fn primary_selection_state(&self) -> &smithay::wayland::selection::primary_selection::PrimarySelectionState {
+        &self.primary_selection_state
+    }
+}
+smithay::delegate_primary_selection!(Vesper);
+
+impl smithay::wayland::xdg_activation::XdgActivationHandler for Vesper {
+    fn activation_state(&mut self) -> &mut smithay::wayland::xdg_activation::XdgActivationState {
+        &mut self.xdg_activation_state
+    }
+
+    /// An app asks for attention (a link opened in the browser, a notification click): bring its window forward.
+    fn request_activation(
+        &mut self,
+        _token: smithay::wayland::xdg_activation::XdgActivationToken,
+        _data: smithay::wayland::xdg_activation::XdgActivationTokenData,
+        surface: WlSurface,
+    ) {
+        if let Some(w) = self.layout.window_for_surface(&surface).cloned() {
+            self.layout.focus_window(&w);
+            self.focus_window(Some(w));
+            self.layout_changed();
+        }
+    }
+}
+smithay::delegate_xdg_activation!(Vesper);
+
+// Apps may set a window icon; the shell draws none of them, so the request is accepted and ignored.
+impl smithay::wayland::xdg_toplevel_icon::XdgToplevelIconHandler for Vesper {}
+smithay::delegate_xdg_toplevel_icon!(Vesper);
+
+smithay::delegate_text_input_manager!(Vesper);

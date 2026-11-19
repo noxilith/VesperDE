@@ -801,12 +801,20 @@ impl Config {
         // never write something the compositor would then reject
         let text = toml::to_string_pretty(&table).map_err(std::io::Error::other)?;
         toml::from_str::<Config>(&text).map_err(|e| std::io::Error::other(e.to_string()))?;
+        let ctx = |what: &str, e: std::io::Error| std::io::Error::new(e.kind(), format!("{what} {}: {e}", file.display()));
         if let Some(dir) = file.parent() {
-            std::fs::create_dir_all(dir)?;
+            std::fs::create_dir_all(dir).map_err(|e| ctx("cannot create the folder of", e))?;
         }
         let tmp = file.with_extension("toml.tmp");
-        std::fs::write(&tmp, text)?;
-        std::fs::rename(tmp, file)
+        match std::fs::write(&tmp, &text).and_then(|()| std::fs::rename(&tmp, &file)) {
+            Ok(()) => Ok(()),
+            // a folder you cannot write to (owned by root after a sudo) but a file you can: change the file in place
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+                let _ = std::fs::remove_file(&tmp);
+                std::fs::write(&file, &text).map_err(|e| ctx("cannot write", e))
+            }
+            Err(e) => Err(ctx("cannot write", e)),
+        }
     }
 
     /// Set `a.b.c` to `value` in the user's config.

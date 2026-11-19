@@ -23,6 +23,7 @@ pub struct Config {
     pub input: Input,
     pub media: Media,
     pub wallpaper: Wallpaper,
+    pub greeter: Greeter,
     pub idle: Idle,
     pub lock: Lock,
     pub screenshots: Screenshots,
@@ -315,6 +316,24 @@ impl Default for Wallpaper {
     }
 }
 
+/// The login screen (`vesper-greeter`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Greeter {
+    /// Background image; empty = the desktop wallpaper (`[wallpaper] path`).
+    pub background: String,
+    /// How strongly the background is blurred, 0 (sharp) to 100.
+    pub blur: u32,
+    /// How much the background is darkened, as a percentage (0 to 90), so the text stays readable.
+    pub dim: u32,
+}
+
+impl Default for Greeter {
+    fn default() -> Self {
+        Self { background: String::new(), blur: 40, dim: 35 }
+    }
+}
+
 /// Commands run by the media, volume and brightness keys.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -377,6 +396,7 @@ impl Default for Config {
             input: Input::default(),
             media: Media::default(),
             wallpaper: Wallpaper::default(),
+            greeter: Greeter::default(),
             idle: Idle::default(),
             lock: Lock::default(),
             screenshots: Screenshots::default(),

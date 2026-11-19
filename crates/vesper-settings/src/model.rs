@@ -464,6 +464,14 @@ fn background(snap: &Snapshot) -> Vec<Section> {
             ],
         ),
         section(
+            "Login screen",
+            vec![
+                text(snap, "Login background", "An image file; empty uses your desktop wallpaper", "greeter.background", "desktop wallpaper"),
+                slider(snap, "Background blur", "0 keeps the picture sharp", "greeter.blur", 0.0, 100.0, ""),
+                slider(snap, "Background dimming", "Darkens the picture so the text stays readable", "greeter.dim", 0.0, 90.0, "%"),
+            ],
+        ),
+        section(
             "Colours from the wallpaper",
             vec![
                 toggle(snap, "Colour the desktop from the wallpaper", "Uses matugen to pick the accent and surface colours", "theme.enabled"),

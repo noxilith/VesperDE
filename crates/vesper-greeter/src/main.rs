@@ -2,8 +2,10 @@
 //! to start the chosen session. Run it with `vesper --greeter` as greetd's session command.
 
 mod greetd;
+mod background;
 mod login;
 mod sessions;
+mod users;
 
 use std::{cell::RefCell, sync::mpsc, time::Duration};
 
@@ -54,6 +56,7 @@ enum Field {
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum Hit {
     User,
+    UserItem(usize),
     Password,
     Session,
     Shutdown,
@@ -83,6 +86,12 @@ struct Greeter {
 
     cmd_tx: mpsc::Sender<Cmd>,
     user: String,
+    /// Accounts offered in the drop-down (empty = type the name).
+    users: Vec<String>,
+    menu: bool,
+    /// Background image, blur and dim from the config, and the picture rendered for the current size.
+    bg_cfg: (String, u32, u32),
+    bg: Option<(u32, u32, Option<Vec<u8>>)>,
     password: String,
     field: Field,
     status: Status,
@@ -138,6 +147,12 @@ fn run() -> Result<()> {
     let list = sessions::list();
     let (last_user, last_session) = sessions::last();
     let session = list.iter().position(|s| s.name == last_session).unwrap_or(0);
+    let mut users = users::list();
+    let user = if users.iter().any(|u| *u == last_user) { last_user.clone() } else { users.first().cloned().unwrap_or(last_user.clone()) };
+    if !users.contains(&user) {
+        users.clear();
+    }
+    let bg_path = if config.greeter.background.trim().is_empty() { config.wallpaper.path.clone() } else { config.greeter.background.clone() };
     let text = Text::new(&config.bar.font, 18.0);
     let mut app = Greeter {
         registry_state: RegistryState::new(&globals),
@@ -152,8 +167,12 @@ fn run() -> Result<()> {
         configured: false,
         exit: false,
         cmd_tx,
-        field: if last_user.is_empty() { Field::User } else { Field::Password },
-        user: last_user,
+        field: if user.is_empty() { Field::User } else { Field::Password },
+        user,
+        users,
+        menu: false,
+        bg_cfg: (bg_path, config.greeter.blur, config.greeter.dim),
+        bg: None,
         password: String::new(),
         status: Status::Idle,
         prompt: None,
@@ -262,8 +281,18 @@ impl Greeter {
                     self.redraw();
                 }
             }
+            Keysym::Up | Keysym::Down if self.picks_user() => {
+                let n = self.users.len();
+                let i = self.users.iter().position(|u| *u == self.user).unwrap_or(0);
+                self.user = self.users[if event.keysym == Keysym::Down { (i + 1) % n } else { (i + n - 1) % n }].clone();
+                self.redraw();
+            }
             Keysym::F3 => self.next_session(),
             Keysym::Escape => {
+                if std::mem::take(&mut self.menu) {
+                    self.redraw();
+                    return;
+                }
                 if self.prompt.take().is_some() {
                     let _ = self.cmd_tx.send(Cmd::Cancel);
                 }
@@ -271,11 +300,13 @@ impl Greeter {
                 self.status = Status::Idle;
                 self.redraw();
             }
+            Keysym::BackSpace if self.picks_user() => {}
             Keysym::BackSpace => {
                 self.field_text().pop();
                 self.status = Status::Idle;
                 self.redraw();
             }
+            _ if self.picks_user() => {}
             _ => {
                 if let Some(s) = event.utf8 {
                     let printable: String = s.chars().filter(|c| !c.is_control()).collect();
@@ -287,6 +318,11 @@ impl Greeter {
                 }
             }
         }
+    }
+
+    /// Is the user field a drop-down (so typing does nothing there)?
+    fn picks_user(&self) -> bool {
+        self.field == Field::User && self.prompt.is_none() && !self.users.is_empty()
     }
 
     fn field_text(&mut self) -> &mut String {
@@ -316,17 +352,28 @@ impl Greeter {
         }
         self.pal = Palette::load();
         let Ok((buffer, canvas)) = self.pool.create_buffer(w as i32, h as i32, w as i32 * 4, wl_shm::Format::Argb8888) else { return };
-        let mut c = Canvas::new(canvas, w, h);
-        let (top, bottom) = (self.pal.surface, {
-            let (a, b) = (self.pal.surface, self.pal.primary_container);
-            [0, 1, 2].map(|k| (a[k] as f32 + (b[k] as f32 - a[k] as f32) * 0.45) as u8)
-        });
-        for y in 0..h as i32 {
-            let t = y as f32 / h as f32;
-            let mix = |a: u8, b: u8| (a as f32 + (b as f32 - a as f32) * t) as u8;
-            c.fill_row(y, [mix(top[0], bottom[0]), mix(top[1], bottom[1]), mix(top[2], bottom[2]), 0xff]);
+        if self.bg.as_ref().map(|b| (b.0, b.1)) != Some((w, h)) {
+            let (path, blur, dim) = &self.bg_cfg;
+            self.bg = Some((w, h, background::render(path, w, h, *blur, *dim)));
         }
-        let (cx, w, h) = (w as i32 / 2, w as i32, h as i32);
+        let picture = self.bg.as_ref().and_then(|b| b.2.as_deref()).filter(|p| p.len() == canvas.len());
+        if let Some(p) = picture {
+            canvas.copy_from_slice(p);
+        }
+        let mut c = Canvas::new(canvas, w, h);
+        if picture.is_none() {
+            let (top, bottom) = (self.pal.surface, {
+                let (a, b) = (self.pal.surface, self.pal.primary_container);
+                [0, 1, 2].map(|k| (a[k] as f32 + (b[k] as f32 - a[k] as f32) * 0.45) as u8)
+            });
+            for y in 0..h as i32 {
+                let t = y as f32 / h as f32;
+                let mix = |a: u8, b: u8| (a as f32 + (b as f32 - a as f32) * t) as u8;
+                c.fill_row(y, [mix(top[0], bottom[0]), mix(top[1], bottom[1]), mix(top[2], bottom[2]), 0xff]);
+            }
+        }
+        let (cx, w, h)
+ = (w as i32 / 2, w as i32, h as i32);
         let now = chrono::Local::now();
         self.big.draw_centered(&mut c, cx, h * 24 / 100, &now.format("%H:%M").to_string(), self.pal.on_surface);
         self.medium.draw_centered(&mut c, cx, h * 24 / 100 + 84, &now.format("%A, %-d %B").to_string(), self.pal.on_surface_variant);
@@ -335,6 +382,7 @@ impl Greeter {
         let (fw, fh) = (360, 50);
         let fx = cx - fw / 2;
         let mut y = h * 50 / 100;
+        let mut menu_y = 0;
         let field = |c: &mut Canvas, hits: &mut Vec<(Rect, Hit)>, y: i32, focused: bool, hit: Hit, hot: bool| {
             let ring = if focused { self.pal.primary } else if hot { self.pal.on_surface_variant } else { self.pal.surface_container_high };
             c.rounded_rect(fx - 2, y - 2, fw + 4, fh + 4, (fh / 2 + 2) as f32, ring);
@@ -344,8 +392,10 @@ impl Greeter {
         // user name (hidden while greetd asks a further question)
         if self.prompt.is_none() {
             field(&mut c, &mut hits, y, self.field == Field::User, Hit::User, self.hover == Some(Hit::User));
-            let shown = if self.user.is_empty() { ("Username", self.pal.on_surface_variant) } else { (self.user.as_str(), self.pal.on_surface) };
-            self.small.draw_centered(&mut c, cx, y + fh / 2, &self.small.fit(shown.0, fw - 40), shown.1);
+            let shown = if self.user.is_empty() { ("Username".to_string(), self.pal.on_surface_variant) } else { (self.user.clone(), self.pal.on_surface) };
+            let arrow = if self.users.is_empty() { "" } else { "  \u{25be}" };
+            self.small.draw_centered(&mut c, cx, y + fh / 2, &format!("{}{arrow}", self.small.fit(&shown.0, fw - 80)), shown.1);
+            menu_y = y + fh + 6;
             y += fh + 14;
         } else if let Some((text, _)) = &self.prompt {
             self.small.draw_centered(&mut c, cx, y + 14, &self.small.fit(text.trim().trim_end_matches(':'), fw), self.pal.on_surface_variant);
@@ -400,6 +450,22 @@ impl Greeter {
             self.small.draw_centered(&mut c, bx + bw / 2, by + 18, label, self.pal.on_surface_variant);
             hits.push(((bx, by, bw, 36), hit));
         }
+        if self.menu && self.prompt.is_none() {
+            let rows = self.users.len() as i32;
+            c.rounded_rect(fx - 2, menu_y - 2, fw + 4, rows * 40 + 8, 18.0, self.pal.surface_container_high);
+            c.rounded_rect(fx, menu_y, fw, rows * 40 + 4, 16.0, self.pal.surface);
+            let mut items = Vec::new();
+            for (i, name) in self.users.iter().enumerate() {
+                let ry = menu_y + 2 + i as i32 * 40;
+                let hot = self.hover == Some(Hit::UserItem(i));
+                if hot || *name == self.user {
+                    c.rounded_rect(fx + 4, ry, fw - 8, 36, 14.0, if hot { self.pal.surface_container_high } else { self.pal.primary_container });
+                }
+                self.small.draw_centered(&mut c, cx, ry + 18, &self.small.fit(name, fw - 40), self.pal.on_surface);
+                items.push(((fx, ry, fw, 36), Hit::UserItem(i)));
+            }
+            hits.splice(0..0, items); // the list is on top, so it is hit first
+        }
         self.hits = hits;
 
         let surface = self.layer.wl_surface();
@@ -449,16 +515,30 @@ impl PointerHandler for Greeter {
                 PointerEventKind::Press { button: 0x110, .. } => match self.hit_at(e.position.0, e.position.1) {
                     Some(Hit::User) => {
                         self.field = Field::User;
+                        self.menu = !self.users.is_empty() && !self.menu;
+                        self.redraw();
+                    }
+                    Some(Hit::UserItem(i)) => {
+                        if let Some(u) = self.users.get(i) {
+                            self.user = u.clone();
+                        }
+                        self.menu = false;
+                        self.field = Field::Password;
                         self.redraw();
                     }
                     Some(Hit::Password) => {
+                        self.menu = false;
                         self.field = Field::Password;
                         self.redraw();
                     }
                     Some(Hit::Session) => self.next_session(),
                     Some(Hit::Shutdown) => self.run("systemctl", &["poweroff"]),
                     Some(Hit::Reboot) => self.run("systemctl", &["reboot"]),
-                    None => {}
+                    None => {
+                        if std::mem::take(&mut self.menu) {
+                            self.redraw();
+                        }
+                    }
                 },
                 _ => {}
             }

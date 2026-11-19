@@ -35,3 +35,19 @@ appears in the list.
 
 Run a fake greetd and the greeter in a window: see `crates/vesper-greeter/src/login.rs` (the test) for the protocol, or start
 `vesper --winit --greeter` with `GREETD_SOCK` pointing at any greetd-compatible socket.
+
+## Look
+
+The background is your desktop wallpaper (`[wallpaper] path`), blurred and darkened. Change it under `[greeter]`
+(or Settings > Background > Login screen):
+
+```toml
+[greeter]
+background = ""   # another image just for the login screen; empty = the desktop wallpaper
+blur       = 40   # 0 (sharp) to 100
+dim        = 35   # darken, 0 to 90 percent
+```
+
+The greeter runs as its own user, so it reads `/etc/vesper/config.toml`, not your personal config. The user field
+is a drop-down of the people on the machine (uid from `UID_MIN` in `/etc/login.defs`, a real login shell; `greeter`
+and `nobody` are left out). Click it, or press Up/Down while it is focused.

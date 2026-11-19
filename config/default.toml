@@ -91,6 +91,11 @@ play_pause      = "playerctl play-pause"
 next            = "playerctl next"
 previous        = "playerctl previous"
 
+[greeter]            # the login screen (needs greetd, see docs/greeter.md)
+background = ""      # image for the login screen; empty = your desktop wallpaper
+blur       = 40      # 0 (sharp) to 100
+dim        = 35      # darken the background, 0 to 90 percent
+
 [wallpaper]
 path  = "/usr/share/vesper/wallpapers/singularity.jpg"   # the wallpaper you start with; e.g. "~/Pictures/Wallpapers/forest.jpg"; empty = plain colour
 dir   = "~/Pictures/Wallpapers"   # folder the wallpaper changer (Mod+W) offers

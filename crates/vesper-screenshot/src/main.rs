@@ -5,7 +5,7 @@
 //! window). Esc or right-click cancels. The chosen rectangle goes back to the compositor, which crops it from the
 //! frozen frame.
 
-use std::{io::Write, num::NonZeroU32, os::unix::net::UnixStream, time::Duration};
+use std::{io::Write, num::NonZeroU32, os::unix::net::UnixStream, time::{Duration, Instant}};
 
 use anyhow::{anyhow, Context, Result};
 use smithay_client_toolkit::{
@@ -29,7 +29,7 @@ use smithay_client_toolkit::{
         wlr_layer::{Anchor, KeyboardInteractivity, Layer, LayerShell, LayerShellHandler, LayerSurface, LayerSurfaceConfigure},
         WaylandSurface,
     },
-    shm::{slot::SlotPool, Shm, ShmHandler},
+    shm::{slot::{Buffer, SlotPool}, Shm, ShmHandler},
 };
 use vesper_config::theme::Palette;
 use vesper_gfx::{Canvas, Image, Text};
@@ -58,9 +58,13 @@ struct Picker {
     output_state: OutputState,
     shm: Shm,
     pool: SlotPool,
+    /// Up to three buffers, reused as the compositor releases them.
+    buffers: Vec<Buffer>,
     qh: QueueHandle<Picker>,
     /// A frame callback is outstanding: redraws wait for it (one buffer per displayed frame, not one per pointer event).
-    frame_pending: bool,
+    /// When the last frame was drawn. Redraws are limited by time: this compositor never answers the frame callback
+    /// of the overlay, so waiting for one left the picture frozen on its first frame.
+    last_draw: Option<Instant>,
     dirty: bool,
     layer: Option<LayerSurface>,
     pointer: Option<wl_pointer::WlPointer>,
@@ -122,6 +126,17 @@ fn load_freeze() -> Result<((u32, u32), Vec<u8>, Vec<Rect>)> {
 }
 
 fn main() -> Result<()> {
+    let result = run();
+    if result.is_err() {
+        // a failed picker must not leave its frozen frame behind (it would look like a picker is still open)
+        let (img, meta) = freeze_paths();
+        let _ = std::fs::remove_file(&img);
+        let _ = std::fs::remove_file(&meta);
+    }
+    result
+}
+
+fn run() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
         .init();
@@ -157,8 +172,9 @@ fn main() -> Result<()> {
         seat_state: SeatState::new(&globals, &qh),
         output_state: OutputState::new(&globals, &qh),
         pool: SlotPool::new(1920 * 1200 * 4, &shm)?,
+        buffers: Vec::new(),
         qh: qh.clone(),
-        frame_pending: false,
+        last_draw: None,
         dirty: false,
         shm,
         layer: Some(layer),
@@ -349,9 +365,9 @@ impl Picker {
         self.dim = dim;
     }
 
-    /// Draw now, or at the next frame callback if one is already on its way.
+    /// Draw now, unless a frame was drawn a moment ago (about 120 fps at most); the next event draws it then.
     fn request_draw(&mut self) {
-        if self.frame_pending {
+        if self.last_draw.is_some_and(|t| t.elapsed() < Duration::from_millis(8)) {
             self.dirty = true;
         } else {
             self.draw();
@@ -369,11 +385,17 @@ impl Picker {
         if self.bg.len() != (w * h * 4) as usize {
             self.build_background();
         }
+        // One buffer, redrawn in place. The compositor hands buffers back slowly, so allocating a fresh one per redraw
+        // grew the shm pool past a gigabyte (the compositor then dropped us: "Broken pipe"), and waiting for releases
+        // left the picture frozen. The compositor copies the pixels at commit, so reusing one buffer is fine here.
+        if self.buffers.is_empty() {
+            let Ok((b, _)) = self.pool.create_buffer(w as i32, h as i32, w as i32 * 4, wl_shm::Format::Argb8888) else { return };
+            self.buffers.push(b);
+        }
+        let slot = self.buffers[0].slot();
         let Some(layer) = &self.layer else { return };
         let sel = self.selection();
-        let Ok((buffer, canvas)) = self.pool.create_buffer(w as i32, h as i32, w as i32 * 4, wl_shm::Format::Argb8888) else {
-            return;
-        };
+        let canvas = self.pool.raw_data_mut(&slot);
         // the frozen screen, dimmed, with the selection shown at full brightness
         let n = self.dim.len().min(canvas.len());
         canvas[..n].copy_from_slice(&self.dim[..n]);
@@ -411,14 +433,10 @@ impl Picker {
             self.text.draw_centered(&mut c, cx, cy, msg, self.pal.on_surface);
         }
         layer.wl_surface().damage_buffer(0, 0, w as i32, h as i32);
-        layer.wl_surface().frame(&self.qh, layer.wl_surface().clone());
-        self.frame_pending = true;
+        self.last_draw = Some(Instant::now());
         self.dirty = false;
-        if buffer.attach_to(layer.wl_surface()).is_ok() {
-            layer.commit();
-        } else {
-            self.frame_pending = false;
-        }
+        layer.wl_surface().attach(Some(self.buffers[0].wl_buffer()), 0, 0);
+        layer.commit();
     }
 }
 
@@ -440,6 +458,7 @@ impl LayerShellHandler for Picker {
             if new != self.size {
                 self.size = new;
                 self.bg.clear(); // rebuilt for the new size
+                self.buffers.clear(); // and the buffers are the wrong size now
             }
         }
         self.request_draw();
@@ -536,7 +555,6 @@ impl CompositorHandler for Picker {
     fn scale_factor_changed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_surface::WlSurface, _: i32) {}
     fn transform_changed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_surface::WlSurface, _: wl_output::Transform) {}
     fn frame(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_surface::WlSurface, _: u32) {
-        self.frame_pending = false;
         if self.dirty {
             self.draw();
         }

@@ -188,7 +188,9 @@ impl Vesper {
         if matches!(kind, CaptureKind::Freeze(_)) {
             let (img, _) = freeze_paths();
             let fresh = std::fs::metadata(&img).and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|e| e.as_secs() < 120);
-            if fresh {
+            // only while a picker really runs: if it crashed or was killed, its leftover files must not block new
+            // screenshots for two minutes
+            if fresh && picker_running() {
                 return;
             }
         }
@@ -281,6 +283,15 @@ impl Vesper {
             }
         }
     }
+}
+
+/// Is a `vesper-screenshot` picker process alive? (`comm` is cut to 15 characters.)
+fn picker_running() -> bool {
+    let Ok(dir) = std::fs::read_dir("/proc") else { return true };
+    dir.flatten().any(|e| {
+        e.file_name().to_str().is_some_and(|n| n.bytes().all(|b| b.is_ascii_digit()))
+            && std::fs::read_to_string(e.path().join("comm")).is_ok_and(|c| c.trim() == "vesper-screensh")
+    })
 }
 
 fn short_path(p: &Path) -> String {

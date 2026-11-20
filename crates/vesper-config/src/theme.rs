@@ -19,10 +19,11 @@ const BUILTIN_TEMPLATE: &str = include_str!("colors.template.toml");
 const KITTY_TEMPLATE: &str = include_str!("kitty.template.conf");
 const FOOT_TEMPLATE: &str = include_str!("foot.template.ini");
 const SHELL_TEMPLATE: &str = include_str!("shell.template.sh");
+const FETCH_TEMPLATE: &str = include_str!("fetch.template");
 const FM_TEMPLATE: &str = include_str!("file-manager.template.json");
 
 /// Built-in app templates (switched on and off in the settings), reserved so your own templates cannot clash.
-pub const APP_TEMPLATES: [&str; 4] = ["vesper-kitty", "vesper-foot", "vesper-shell", "vesper-file-manager"];
+pub const APP_TEMPLATES: [&str; 5] = ["vesper-kitty", "vesper-foot", "vesper-shell", "vesper-fetch", "vesper-file-manager"];
 
 /// The matugen schemes, in the order the settings cycle through them.
 pub const SCHEMES: [&str; 10] = [
@@ -95,13 +96,15 @@ pub struct ThemeSettings {
     pub foot: bool,
     /// Write the prompt colours to `~/.local/state/vesper/shell-colors.sh` (the shell prompt reads it at every prompt).
     pub shell: bool,
+    /// Colour fetch from the wallpaper (writes `~/.config/fetch/colors`, which fetch reads on every start).
+    pub fetch: bool,
     /// Colour File Manager from the wallpaper (writes a `vesper` theme for it).
     pub file_manager: bool,
 }
 
 impl Default for ThemeSettings {
     fn default() -> Self {
-        Self { enabled: true, mode: "dark".into(), scheme: SCHEMES[0].into(), contrast: 0.0, prefer: "saturation".into(), binary: "matugen".into(), kitty: true, foot: true, shell: true, file_manager: true }
+        Self { enabled: true, mode: "dark".into(), scheme: SCHEMES[0].into(), contrast: 0.0, prefer: "saturation".into(), binary: "matugen".into(), kitty: true, foot: true, shell: true, fetch: true, file_manager: true }
     }
 }
 
@@ -212,6 +215,16 @@ pub fn write_templates(user: &[Template]) -> io::Result<()> {
         ));
     } else {
         let _ = std::fs::remove_file(shell_colors_file());
+    }
+    if settings.fetch {
+        write_atomic(&app_template_file("fetch-colors"), FETCH_TEMPLATE)?;
+        out.push_str(&format!(
+            "\n[templates.vesper-fetch]\ninput_path = {}\noutput_path = {}\n",
+            toml_string(&app_template_file("fetch-colors").to_string_lossy()),
+            toml_string(&fetch_colors_file().to_string_lossy()),
+        ));
+    } else {
+        let _ = std::fs::remove_file(fetch_colors_file());
     }
     if settings.file_manager {
         let first = !file_manager_theme_file().exists();
@@ -507,6 +520,11 @@ pub fn foot_colors_file() -> PathBuf {
     xdg_config().join("foot/vesper-colors.ini")
 }
 
+/// Where the fetch colours are written; fetch reads it on every start.
+pub fn fetch_colors_file() -> PathBuf {
+    xdg_config().join("fetch/colors")
+}
+
 /// Where the shell prompt colours are written.
 pub fn shell_colors_file() -> PathBuf {
     xdg_state().join("vesper/shell-colors.sh")
@@ -607,6 +625,9 @@ pub fn apply_app_links(settings: &ThemeSettings) {
     }
     if !(settings.shell && settings.enabled) {
         let _ = std::fs::remove_file(shell_colors_file());
+    }
+    if !(settings.fetch && settings.enabled) {
+        let _ = std::fs::remove_file(fetch_colors_file());
     }
     set_file_manager_theme(settings.file_manager && settings.enabled);
 }

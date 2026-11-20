@@ -136,7 +136,7 @@ pub fn freeze_paths() -> (PathBuf, PathBuf) {
 
 /// Save the frozen frame (8 byte header: width, height, then RGBA) and the window rectangles (output-local logical
 /// pixels, topmost first), then start the picker, which draws the frame as its background.
-pub fn write_freeze(rgba: Vec<u8>, w: u32, h: u32, windows: Vec<[i32; 4]>, pick: Pick) {
+pub fn write_freeze(rgba: Vec<u8>, w: u32, h: u32, windows: Vec<[i32; 4]>, pick: Pick, output: &str) {
     let (img, meta) = freeze_paths();
     let mut data = Vec::with_capacity(rgba.len() + 8);
     data.extend_from_slice(&w.to_le_bytes());
@@ -147,13 +147,13 @@ pub fn write_freeze(rgba: Vec<u8>, w: u32, h: u32, windows: Vec<[i32; 4]>, pick:
         tracing::warn!("could not save the frozen screen");
         return;
     }
-    Vesper::run_component("vesper-screenshot", &["--mode", pick.arg()]);
+    Vesper::run_component("vesper-screenshot", &["--mode", pick.arg(), "--output", output]);
 }
 
 impl Vesper {
     /// Output-local rectangles of the visible windows, topmost first, for the picker's window hover.
     pub fn freeze_windows(&self) -> Vec<[i32; 4]> {
-        let (Some(out), Some(output)) = (self.output_geometry(), self.output()) else { return Vec::new() };
+        let (Some(out), Some(output)) = (self.capture_output().and_then(|o| self.space.output_geometry(o)), self.capture_output()) else { return Vec::new() };
         let mut wins: Vec<_> = self.space.elements_for_output(output).cloned().collect();
         wins.reverse();
         wins.iter()
@@ -201,7 +201,7 @@ impl Vesper {
 
     /// The area to keep, in output-local logical pixels, for the pending capture (None = everything).
     pub fn capture_crop(&self, kind: CaptureKind) -> Option<Rectangle<i32, Logical>> {
-        let out = self.output_geometry()?;
+        let out = self.capture_output().and_then(|o| self.space.output_geometry(o))?;
         match kind {
             CaptureKind::Screen | CaptureKind::Freeze(_) => None,
             CaptureKind::Region(r) => Some(r),

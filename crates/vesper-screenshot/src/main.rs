@@ -97,7 +97,7 @@ fn load_freeze() -> Result<((u32, u32), Vec<u8>, Vec<Rect>)> {
     }
     let w = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
     let h = u32::from_le_bytes([data[4], data[5], data[6], data[7]]);
-    if data.len() != 8 + (w * h * 4) as usize {
+    if w == 0 || h == 0 || data.len() != 8 + (w as usize * h as usize * 4) {
         return Err(anyhow!("the frozen frame has the wrong size"));
     }
     let windows: Vec<Rect> = std::fs::read_to_string(&meta)
@@ -135,8 +135,14 @@ fn main() -> Result<()> {
     let layer_shell = LayerShell::bind(&globals, &qh).map_err(|e| anyhow!("wlr-layer-shell is not available: {e}"))?;
     let shm = Shm::bind(&globals, &qh).map_err(|e| anyhow!("wl_shm: {e}"))?;
 
+    // the compositor names the monitor it froze: the overlay opens on that one (`vesper-screenshot@NAME`)
+    let namespace = match std::env::args().skip_while(|a| a != "--output").nth(1) {
+        Some(name) if !name.is_empty() => format!("vesper-screenshot@{name}"),
+        _ => "vesper-screenshot".to_owned(),
+    };
+    let namespace = namespace.as_str();
     let surface = compositor.create_surface(&qh);
-    let layer = layer_shell.create_layer_surface(&qh, surface, Layer::Overlay, Some("vesper-screenshot"), None);
+    let layer = layer_shell.create_layer_surface(&qh, surface, Layer::Overlay, Some(namespace), None);
     layer.set_anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
     layer.set_exclusive_zone(-1);
     layer.set_keyboard_interactivity(KeyboardInteractivity::Exclusive);
@@ -403,6 +409,13 @@ impl LayerShellHandler for Picker {
     fn configure(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &LayerSurface, c: LayerSurfaceConfigure, _: u32) {
         if let (Some(w), Some(h)) = (NonZeroU32::new(c.new_size.0), NonZeroU32::new(c.new_size.1)) {
             let new = (w.get(), h.get());
+            // the frozen frame is of another monitor (other shape): do not draw it, just leave
+            let (fw, fh) = (self.frozen_size.0 as u64, self.frozen_size.1 as u64);
+            if (new.0 as u64 * fh).abs_diff(new.1 as u64 * fw) * 50 > new.0 as u64 * fh {
+                tracing::error!("the frozen frame ({fw}x{fh}) does not fit this monitor ({}x{})", new.0, new.1);
+                self.done = true;
+                return;
+            }
             if new != self.size {
                 self.size = new;
                 self.bg.clear(); // rebuilt for the new size

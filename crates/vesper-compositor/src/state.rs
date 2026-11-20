@@ -379,6 +379,12 @@ impl Vesper {
         self.space.outputs().find(|o| !want.is_empty() && &o.name() == want).or_else(|| self.space.outputs().next())
     }
 
+    /// The monitor a screenshot is taken of: the one under the pointer, else the primary one.
+    pub fn capture_output(&self) -> Option<&Output> {
+        let p = self.seat.get_pointer().map(|p| p.current_location());
+        p.and_then(|p| self.space.outputs().find(|o| self.space.output_geometry(o).is_some_and(|g| g.to_f64().contains(p)))).or_else(|| self.output())
+    }
+
     /// Keep a pointer position inside the union of all monitors.
     pub fn clamp_to_outputs(&self, p: Point<f64, Logical>) -> Point<f64, Logical> {
         let rects: Vec<_> = self.space.outputs().filter_map(|o| self.space.output_geometry(o)).collect();

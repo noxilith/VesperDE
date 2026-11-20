@@ -294,7 +294,8 @@ impl Vesper {
         let Some(output) = self.tty.as_ref().and_then(|t| t.surfaces.get(&crtc)).map(|s| s.output.clone()) else { return };
         let lock_surfaces = self.lock_surfaces_for(&output);
         let pointer_loc = if lock_surfaces.is_some() { None } else { self.seat.get_pointer().map(|p| p.current_location()) };
-        let capture = self.pending_capture.take();
+        // a screenshot is of one monitor (the one under the pointer): the others leave it pending
+        let capture = if self.capture_output().is_some_and(|o| *o == output) { self.pending_capture.take() } else { None };
         let crop = capture.and_then(|k| self.capture_crop(k));
         let freeze = match capture {
             Some(crate::screenshot::CaptureKind::Freeze(p)) => Some((self.freeze_windows(), p)),
@@ -378,7 +379,7 @@ impl Vesper {
             hint.clone(), Some((&mut self.blur, &blur_params)), self.round.as_ref().map(|r| (r, corner)), lock_surfaces.as_deref());
                 if let Some(rgba) = crate::screenshot::grab(renderer, &clean, size, output.current_scale().fractional_scale()) {
                     if let Some((windows, pick)) = freeze {
-                        crate::screenshot::write_freeze(rgba, size.w as u32, size.h as u32, windows, pick);
+                        crate::screenshot::write_freeze(rgba, size.w as u32, size.h as u32, windows, pick, &output.name());
                     } else {
                         crate::screenshot::finish(rgba, size.w as u32, size.h as u32, crop, shot_dir, shot_tx);
                     }

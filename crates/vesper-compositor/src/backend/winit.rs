@@ -91,7 +91,7 @@ pub fn init(event_loop: &EventLoop<'static, Vesper>, state: &mut Vesper) -> Resu
                     let clean = crate::render::output_elements(backend.renderer(), &state.space, &output, None, borders.clone(), hint.clone(), Some((&mut state.blur, &blur_params)), state.round.as_ref().map(|r| (r, corner)), lock.as_deref());
                     if let Some(rgba) = crate::screenshot::grab(backend.renderer(), &clean, size, output.current_scale().fractional_scale()) {
                         if let Some((windows, pick)) = freeze {
-                            crate::screenshot::write_freeze(rgba, size.w as u32, size.h as u32, windows, pick);
+                            crate::screenshot::write_freeze(rgba, size.w as u32, size.h as u32, windows, pick, &state.output().map(|o| o.name()).unwrap_or_default());
                         } else {
                             crate::screenshot::finish(rgba, size.w as u32, size.h as u32, crop, state.config.screenshots.dir.clone(), state.shot_tx.clone());
                         }

@@ -688,7 +688,15 @@ pub struct ClientState {
 
 impl ClientData for ClientState {
     fn initialized(&self, _client_id: ClientId) {}
-    fn disconnected(&self, _client_id: ClientId, _reason: DisconnectReason) {}
+    fn disconnected(&self, client_id: ClientId, reason: DisconnectReason) {
+        match reason {
+            DisconnectReason::ConnectionClosed => tracing::debug!("client {client_id:?} disconnected (connection closed)"),
+            DisconnectReason::ProtocolError(e) => tracing::warn!(
+                "client {client_id:?} disconnected by protocol error on {} #{} (code {}): {}",
+                e.object_interface, e.object_id, e.code, e.message
+            ),
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq)]

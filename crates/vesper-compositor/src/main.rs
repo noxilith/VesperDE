@@ -189,8 +189,30 @@ fn main() -> Result<()> {
     }
     state.plugins_sync();
 
-    event_loop.run(None, &mut state, |state| {
+    // Some event source can stay ready without anything to do (a client that keeps committing, a stuck fd). Every pass
+    // then runs the whole render check and the loop uses a full core. When passes come back-to-back for a while we
+    // sleep a moment per pass: input still gets through within 2 ms, and the CPU use drops to almost nothing.
+    let mut last_pass = std::time::Instant::now();
+    let mut hot = 0u32;
+    let mut warned = false;
+    event_loop.run(None, &mut state, move |state| {
         tracing::trace!(target: "vesper::wake", "loop pass");
+        let now = std::time::Instant::now();
+        let gap = now.duration_since(last_pass);
+        // once throttled, only a real pause (5 ms) ends it: our own sleep makes the gaps about 2 ms
+        if gap < std::time::Duration::from_micros(300) || (hot > 200 && gap < std::time::Duration::from_millis(5)) {
+            hot = hot.saturating_add(1);
+        } else {
+            hot = 0;
+        }
+        last_pass = now;
+        if hot > 200 {
+            if !warned {
+                warned = true;
+                tracing::warn!("the event loop is spinning (passes come back-to-back); throttling it. Run with RUST_LOG=vesper::wake=trace to see passes");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
         state.space.refresh();
         state.popups.cleanup();
         let _ = state.display_handle.flush_clients();

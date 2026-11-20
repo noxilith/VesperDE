@@ -191,7 +191,6 @@ pub struct Vesper {
     pub primary_selection_state: smithay::wayland::selection::primary_selection::PrimarySelectionState,
     pub xdg_activation_state: smithay::wayland::xdg_activation::XdgActivationState,
     #[allow(dead_code)] // kept alive: dropping the state removes the global
-    pub xdg_toplevel_icon_state: smithay::wayland::xdg_toplevel_icon::XdgToplevelIconManager,
     #[allow(dead_code)]
     pub text_input_state: smithay::wayland::text_input::TextInputManagerState,
     /// Winit backend: imports a dmabuf into its renderer to check it is usable.
@@ -217,7 +216,6 @@ impl Vesper {
         let xdg_foreign_state = smithay::wayland::xdg_foreign::XdgForeignState::new::<Self>(&dh);
         let primary_selection_state = smithay::wayland::selection::primary_selection::PrimarySelectionState::new::<Self>(&dh);
         let xdg_activation_state = smithay::wayland::xdg_activation::XdgActivationState::new::<Self>(&dh);
-        let xdg_toplevel_icon_state = smithay::wayland::xdg_toplevel_icon::XdgToplevelIconManager::new::<Self>(&dh);
         let text_input_state = smithay::wayland::text_input::TextInputManagerState::new::<Self>(&dh);
         let data_device_state = DataDeviceState::new::<Self>(&dh);
         let cursor_shape_state = smithay::wayland::cursor_shape::CursorShapeManagerState::new::<Self>(&dh);
@@ -344,7 +342,6 @@ impl Vesper {
             xdg_foreign_state,
             primary_selection_state,
             xdg_activation_state,
-            xdg_toplevel_icon_state,
             text_input_state,
             dmabuf_importer: None,
         }
@@ -690,7 +687,7 @@ impl ClientData for ClientState {
     fn initialized(&self, _client_id: ClientId) {}
     fn disconnected(&self, client_id: ClientId, reason: DisconnectReason) {
         match reason {
-            DisconnectReason::ConnectionClosed => tracing::debug!("client {client_id:?} disconnected (connection closed)"),
+            DisconnectReason::ConnectionClosed => tracing::info!("client {client_id:?} disconnected (connection closed)"),
             DisconnectReason::ProtocolError(e) => tracing::warn!(
                 "client {client_id:?} disconnected by protocol error on {} #{} (code {}): {}",
                 e.object_interface, e.object_id, e.code, e.message

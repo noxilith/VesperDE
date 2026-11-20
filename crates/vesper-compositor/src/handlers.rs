@@ -471,8 +471,5 @@ impl smithay::wayland::xdg_activation::XdgActivationHandler for Vesper {
 }
 smithay::delegate_xdg_activation!(Vesper);
 
-// Apps may set a window icon; the shell draws none of them, so the request is accepted and ignored.
-impl smithay::wayland::xdg_toplevel_icon::XdgToplevelIconHandler for Vesper {}
-smithay::delegate_xdg_toplevel_icon!(Vesper);
 
 smithay::delegate_text_input_manager!(Vesper);

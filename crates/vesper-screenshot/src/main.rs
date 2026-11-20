@@ -58,6 +58,10 @@ struct Picker {
     output_state: OutputState,
     shm: Shm,
     pool: SlotPool,
+    qh: QueueHandle<Picker>,
+    /// A frame callback is outstanding: redraws wait for it (one buffer per displayed frame, not one per pointer event).
+    frame_pending: bool,
+    dirty: bool,
     layer: Option<LayerSurface>,
     pointer: Option<wl_pointer::WlPointer>,
     keyboard: Option<wl_keyboard::WlKeyboard>,
@@ -153,6 +157,9 @@ fn main() -> Result<()> {
         seat_state: SeatState::new(&globals, &qh),
         output_state: OutputState::new(&globals, &qh),
         pool: SlotPool::new(1920 * 1200 * 4, &shm)?,
+        qh: qh.clone(),
+        frame_pending: false,
+        dirty: false,
         shm,
         layer: Some(layer),
         pointer: None,
@@ -342,6 +349,15 @@ impl Picker {
         self.dim = dim;
     }
 
+    /// Draw now, or at the next frame callback if one is already on its way.
+    fn request_draw(&mut self) {
+        if self.frame_pending {
+            self.dirty = true;
+        } else {
+            self.draw();
+        }
+    }
+
     fn draw(&mut self) {
         if self.layer.is_none() {
             return;
@@ -395,8 +411,13 @@ impl Picker {
             self.text.draw_centered(&mut c, cx, cy, msg, self.pal.on_surface);
         }
         layer.wl_surface().damage_buffer(0, 0, w as i32, h as i32);
+        layer.wl_surface().frame(&self.qh, layer.wl_surface().clone());
+        self.frame_pending = true;
+        self.dirty = false;
         if buffer.attach_to(layer.wl_surface()).is_ok() {
             layer.commit();
+        } else {
+            self.frame_pending = false;
         }
     }
 }
@@ -421,7 +442,7 @@ impl LayerShellHandler for Picker {
                 self.bg.clear(); // rebuilt for the new size
             }
         }
-        self.draw();
+        self.request_draw();
     }
 }
 
@@ -430,7 +451,7 @@ impl PointerHandler for Picker {
         for e in events {
             self.now = e.position;
             match e.kind {
-                PointerEventKind::Enter { .. } => self.draw(),
+                PointerEventKind::Enter { .. } => self.request_draw(),
                 PointerEventKind::Press { button, .. } => {
                     if button == BTN_LEFT {
                         self.press = Some(e.position);
@@ -445,7 +466,7 @@ impl PointerHandler for Picker {
                             self.dragging = true; // a drag overrides the window selection
                         }
                     }
-                    self.draw();
+                    self.request_draw();
                 }
                 PointerEventKind::Release { button: BTN_LEFT, .. } => {
                     self.chosen = if self.dragging {
@@ -459,7 +480,7 @@ impl PointerHandler for Picker {
                     } else {
                         self.press = None;
                         self.dragging = false;
-                        self.draw();
+                        self.request_draw();
                     }
                 }
                 _ => {}
@@ -514,7 +535,12 @@ impl SeatHandler for Picker {
 impl CompositorHandler for Picker {
     fn scale_factor_changed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_surface::WlSurface, _: i32) {}
     fn transform_changed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_surface::WlSurface, _: wl_output::Transform) {}
-    fn frame(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_surface::WlSurface, _: u32) {}
+    fn frame(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_surface::WlSurface, _: u32) {
+        self.frame_pending = false;
+        if self.dirty {
+            self.draw();
+        }
+    }
     fn surface_enter(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_surface::WlSurface, _: &wl_output::WlOutput) {}
     fn surface_leave(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_surface::WlSurface, _: &wl_output::WlOutput) {}
 }

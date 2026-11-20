@@ -17,10 +17,12 @@ pub const BUILTIN: &str = "vesper";
 
 const BUILTIN_TEMPLATE: &str = include_str!("colors.template.toml");
 const KITTY_TEMPLATE: &str = include_str!("kitty.template.conf");
+const FOOT_TEMPLATE: &str = include_str!("foot.template.ini");
+const SHELL_TEMPLATE: &str = include_str!("shell.template.sh");
 const FM_TEMPLATE: &str = include_str!("file-manager.template.json");
 
 /// Built-in app templates (switched on and off in the settings), reserved so your own templates cannot clash.
-pub const APP_TEMPLATES: [&str; 2] = ["vesper-kitty", "vesper-file-manager"];
+pub const APP_TEMPLATES: [&str; 4] = ["vesper-kitty", "vesper-foot", "vesper-shell", "vesper-file-manager"];
 
 /// The matugen schemes, in the order the settings cycle through them.
 pub const SCHEMES: [&str; 10] = [
@@ -89,13 +91,17 @@ pub struct ThemeSettings {
     pub binary: String,
     /// Colour kitty from the wallpaper (writes `~/.config/kitty/vesper-colors.conf` and includes it from `kitty.conf`).
     pub kitty: bool,
+    /// Colour foot from the wallpaper (writes `~/.config/foot/vesper-colors.ini` and includes it from `foot.ini`).
+    pub foot: bool,
+    /// Write the prompt colours to `~/.local/state/vesper/shell-colors.sh` (the shell prompt reads it at every prompt).
+    pub shell: bool,
     /// Colour File Manager from the wallpaper (writes a `vesper` theme for it).
     pub file_manager: bool,
 }
 
 impl Default for ThemeSettings {
     fn default() -> Self {
-        Self { enabled: true, mode: "dark".into(), scheme: SCHEMES[0].into(), contrast: 0.0, prefer: "saturation".into(), binary: "matugen".into(), kitty: true, file_manager: true }
+        Self { enabled: true, mode: "dark".into(), scheme: SCHEMES[0].into(), contrast: 0.0, prefer: "saturation".into(), binary: "matugen".into(), kitty: true, foot: true, shell: true, file_manager: true }
     }
 }
 
@@ -186,6 +192,26 @@ pub fn write_templates(user: &[Template]) -> io::Result<()> {
             toml_string("kill -USR1 $(pidof kitty) 2>/dev/null || true"),
         ));
         link_kitty();
+    }
+    if settings.foot {
+        write_atomic(&app_template_file("foot.ini"), FOOT_TEMPLATE)?;
+        out.push_str(&format!(
+            "\n[templates.vesper-foot]\ninput_path = {}\noutput_path = {}\npost_hook = {}\n",
+            toml_string(&app_template_file("foot.ini").to_string_lossy()),
+            toml_string(&foot_colors_file().to_string_lossy()),
+            toml_string("pkill -USR1 -x foot || true"),
+        ));
+        link_foot();
+    }
+    if settings.shell {
+        write_atomic(&app_template_file("shell-colors.sh"), SHELL_TEMPLATE)?;
+        out.push_str(&format!(
+            "\n[templates.vesper-shell]\ninput_path = {}\noutput_path = {}\n",
+            toml_string(&app_template_file("shell-colors.sh").to_string_lossy()),
+            toml_string(&shell_colors_file().to_string_lossy()),
+        ));
+    } else {
+        let _ = std::fs::remove_file(shell_colors_file());
     }
     if settings.file_manager {
         let first = !file_manager_theme_file().exists();
@@ -476,6 +502,16 @@ pub fn kitty_colors_file() -> PathBuf {
     xdg_config().join("kitty/vesper-colors.conf")
 }
 
+/// Where the foot colours are written; `foot.ini` includes it.
+pub fn foot_colors_file() -> PathBuf {
+    xdg_config().join("foot/vesper-colors.ini")
+}
+
+/// Where the shell prompt colours are written.
+pub fn shell_colors_file() -> PathBuf {
+    xdg_state().join("vesper/shell-colors.sh")
+}
+
 /// File Manager reads every `*.json` in this folder as a theme; this one is called `vesper`.
 pub fn file_manager_theme_file() -> PathBuf {
     xdg_state().join("file-manager/themes/vesper.json")
@@ -511,6 +547,32 @@ fn unlink_kitty() {
     let _ = write_atomic(&conf, &(kept.join("\n") + "\n"));
 }
 
+/// Make `foot.ini` include the generated colours (once). Everything else in the file is left alone.
+fn link_foot() {
+    let conf = xdg_config().join("foot/foot.ini");
+    let text = std::fs::read_to_string(&conf).unwrap_or_default();
+    if text.contains("vesper-colors.ini") {
+        return;
+    }
+    let mut new = text;
+    if !new.is_empty() && !new.ends_with('\n') {
+        new.push('\n');
+    }
+    new.push_str("\n# Added by Vesper: colours follow the wallpaper (turn off in Settings > Personalization).\ninclude=~/.config/foot/vesper-colors.ini\n");
+    let _ = write_atomic(&conf, &new);
+}
+
+/// Remove the include again.
+fn unlink_foot() {
+    let conf = xdg_config().join("foot/foot.ini");
+    let Ok(text) = std::fs::read_to_string(&conf) else { return };
+    if !text.contains("vesper-colors.ini") {
+        return;
+    }
+    let kept: Vec<&str> = text.lines().filter(|l| !l.contains("vesper-colors.ini") && !l.starts_with("# Added by Vesper: colours follow")).collect();
+    let _ = write_atomic(&conf, &(kept.join("\n") + "\n"));
+}
+
 /// Select (or deselect) the generated theme in File Manager's settings. Only touches the `theme` key.
 fn set_file_manager_theme(on: bool) {
     let path = file_manager_settings_file();
@@ -537,6 +599,14 @@ pub fn apply_app_links(settings: &ThemeSettings) {
         link_kitty();
     } else {
         unlink_kitty();
+    }
+    if settings.foot && settings.enabled {
+        link_foot();
+    } else {
+        unlink_foot();
+    }
+    if !(settings.shell && settings.enabled) {
+        let _ = std::fs::remove_file(shell_colors_file());
     }
     set_file_manager_theme(settings.file_manager && settings.enabled);
 }

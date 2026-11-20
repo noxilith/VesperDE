@@ -488,6 +488,8 @@ fn background(snap: &Snapshot) -> Vec<Section> {
                 Row { title: "Scheme".into(), desc: "The colour recipe".into(), ctl: Ctl::Choice { path: "theme.scheme".into(), options: schemes, cur: snap.get("theme.scheme").unwrap_or(Val::Unset) } },
                 Row { title: "Contrast".into(), desc: String::new(), ctl: Ctl::Choice { path: "theme.contrast".into(), options: contrast, cur: snap.get("theme.contrast").unwrap_or(Val::Unset) } },
                 toggle(snap, "Colour kitty", "Writes ~/.config/kitty/vesper-colors.conf and includes it from kitty.conf", "theme.kitty"),
+                toggle(snap, "Colour foot", "Writes ~/.config/foot/vesper-colors.ini and includes it from foot.ini", "theme.foot"),
+                toggle(snap, "Colour the shell prompt", "Writes ~/.local/state/vesper/shell-colors.sh for the prompt to read", "theme.shell"),
                 toggle(snap, "Colour File Manager", "Adds a theme called Wallpaper (Vesper) and selects it", "theme.file_manager"),
                 Row { title: "Your own templates".into(), desc: "Add matugen templates for other apps".into(), ctl: Ctl::Button { label: "Open template editor".into(), act: Act::OpenThemeEditor } },
             ],
@@ -877,6 +879,8 @@ pub fn apply(path: &str, val: &Val) -> Result<(), String> {
         match (field, val) {
             ("enabled", Val::Bool(b)) => t.enabled = *b,
             ("kitty", Val::Bool(b)) => t.kitty = *b,
+            ("foot", Val::Bool(b)) => t.foot = *b,
+            ("shell", Val::Bool(b)) => t.shell = *b,
             ("file_manager", Val::Bool(b)) => t.file_manager = *b,
             ("mode", Val::Str(v)) => t.mode = v.clone(),
             ("scheme", Val::Str(v)) => t.scheme = v.clone(),

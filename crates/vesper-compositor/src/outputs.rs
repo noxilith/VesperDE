@@ -92,3 +92,19 @@ mod tests {
         assert_eq!(p, vec![(0, 0), (1920, 0), (0, -600)]);
     }
 }
+
+/// `[display.outputs."X"] transform`: "normal", "90", "180" or "270" (anything else is normal).
+pub fn parse_transform(s: &str) -> smithay::utils::Transform {
+    use smithay::utils::Transform;
+    match s.trim() {
+        "90" => Transform::_90,
+        "180" => Transform::_180,
+        "270" => Transform::_270,
+        _ => Transform::Normal,
+    }
+}
+
+/// The monitor's size in pixels as the user sees it: the mode, turned if the monitor is rotated.
+pub fn upright_size(output: &smithay::output::Output) -> Option<smithay::utils::Size<i32, smithay::utils::Physical>> {
+    output.current_mode().map(|m| output.current_transform().transform_size(m.size))
+}

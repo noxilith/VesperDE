@@ -121,6 +121,12 @@ pub enum Command {
     FocusInColumn { delta: isize },
     /// Open the settings window, optionally on a page.
     Settings { page: Option<String> },
+    /// Do what a keyboard shortcut does, by its id (the ids of `vesper_config::keys::BINDS`: `close`, `fullscreen`, `terminal` ...).
+    Action { id: String },
+    /// Start a program (through `sh -c`).
+    Spawn { command: String },
+    /// Change a setting in the config file, like Settings does (for example `{"cmd":"set_config","path":"appearance.gap","value":8}`).
+    SetConfig { path: String, value: serde_json::Value },
 }
 
 /// Where the compositor listens: `$VESPER_SOCKET`, else `$XDG_RUNTIME_DIR/vesper.sock`.

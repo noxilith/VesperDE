@@ -264,7 +264,7 @@ pub fn build(page: &str, snap: &Snapshot) -> Page {
         "notifications" => notifications(snap),
         "apps" => apps(snap),
         "lock" => lock(snap),
-        "keys" => keys(),
+        "keys" => keys(snap),
         "profiles" => profiles_page(),
         "plugins" => plugins_page(snap),
         _ => about(),
@@ -324,6 +324,9 @@ fn display(snap: &Snapshot) -> Vec<Section> {
             desc: "Make everything larger or smaller".into(),
             ctl: Ctl::Choice { path: key("scale"), options: scales, cur: snap.get(&key("scale")).filter(|v| !matches!(v, Val::Float(f) if *f == 0.0)).unwrap_or(Val::Unset) },
         });
+        let turns: Vec<(Val, String)> = vec![(s("normal"), "Landscape".into()), (s("90"), "Portrait (turned left)".into()), (s("180"), "Landscape, upside down".into()), (s("270"), "Portrait (turned right)".into())];
+        let cur = snap.get(&key("transform")).filter(|v| !matches!(v, Val::Str(t) if t.is_empty())).unwrap_or(s("normal"));
+        rows.push(Row { title: "Orientation".into(), desc: "Rotate the picture, for a monitor stood on its side".into(), ctl: Ctl::Choice { path: key("transform"), options: turns, cur } });
         if o.enabled {
             let at = |f: &str, d: i32| match snap.get(&key(f)) {
                 Some(Val::Int(i)) => i as f64,
@@ -457,6 +460,7 @@ fn background(snap: &Snapshot) -> Vec<Section> {
     let contrast: Vec<(Val, String)> =
         [(-1.0, "Lowest"), (-0.5, "Lower"), (0.0, "Standard"), (0.5, "Higher"), (1.0, "Highest")].iter().map(|(v, l)| (Val::Float(*v), (*l).to_owned())).collect();
     vec![
+        section("Colour overrides", colour_rows(snap)),
         section(
             "Wallpaper",
             vec![
@@ -611,7 +615,7 @@ fn bar(snap: &Snapshot) -> Vec<Section> {
     ];
     let mut names: Vec<(&'static str, String, String)> = base.iter().map(|(a, b, c)| (*a, b.to_string(), c.to_string())).collect();
     // widgets that enabled plugins offer
-    for p in vesper_config::plugins::active(&snap.list("plugins.enabled")) {
+    for p in vesper_config::plugins::active(&snap.list("plugins.enabled")).into_iter().filter(|p| p.can("bar")) {
         for b in &p.manifest.bar_item {
             let label = if b.label.is_empty() { format!("{}: {}", p.manifest.name, b.id) } else { b.label.clone() };
             names.push((vesper_config::intern(&vesper_config::plugins::item_id(&p.id, &b.id)), label, format!("From the plugin {}", p.manifest.name)));
@@ -640,6 +644,7 @@ fn bar(snap: &Snapshot) -> Vec<Section> {
         toggle(snap, "24-hour clock", "Off shows 12-hour time with am/pm", "bar.clock_24h"),
         toggle(snap, "Show seconds", "", "bar.clock_seconds"),
         toggle(snap, "Show the date", "Weekday, day and month before the time", "bar.clock_date"),
+        toggle(snap, "Bar on every monitor", "Each extra monitor gets its own copy of the bar", "bar.all_monitors"),
         toggle(snap, "Volume and brightness popup", "A small popup under the bar when you change the volume or brightness with the keys or by scrolling", "bar.osd"),
         toggle(snap, "Window title in the bar", "Shows the focused window's title in the middle when no apps are minimized", "bar.show_title"),
     ];
@@ -761,9 +766,44 @@ fn notifications(snap: &Snapshot) -> Vec<Section> {
             num(snap, "Schedule ends at", "Hour of the day, 0-23 (may be after midnight)", "notifications.dnd_to", 0.0, 23.0, 1.0, true, ":00"),
             secs_choice(snap, "Stay on screen for", "When the app does not say; 0 keeps them until clicked", "notifications.default_timeout", &[0, 3, 5, 6, 10, 15, 30]),
             num(snap, "History size", "How many past notifications are kept", "notifications.history_max", 10.0, 500.0, 10.0, true, ""),
+            choice(snap, "Where popups appear", "", "notifications.position", vec![(s("top-right"), "Top right"), (s("top-left"), "Top left"), (s("bottom-right"), "Bottom right"), (s("bottom-left"), "Bottom left")]),
+            num(snap, "Popup width", "", "notifications.width", 260.0, 640.0, 20.0, true, " px"),
+            num(snap, "Space from the screen edge", "", "notifications.margin", 0.0, 200.0, 4.0, true, " px"),
+            num(snap, "Popups at once", "More wait until others go", "notifications.max_visible", 1.0, 10.0, 1.0, true, ""),
             Row { title: "Notification centre".into(), desc: "Also Mod+N".into(), ctl: Ctl::Button { label: "Open".into(), act: Act::OpenNotifications } },
         ],
     )]
+}
+
+fn colour_rows(snap: &Snapshot) -> Vec<Row> {
+    let roles: [(&str, &str); 10] = [
+        ("primary", "Accent"),
+        ("on_primary", "Text on the accent"),
+        ("surface", "Panel background"),
+        ("surface_container", "Raised background"),
+        ("surface_container_high", "Raised background, brighter"),
+        ("on_surface", "Text"),
+        ("on_surface_variant", "Muted text"),
+        ("secondary", "Second accent"),
+        ("tertiary", "Third accent"),
+        ("error", "Warnings and errors"),
+    ];
+    let mut rows = vec![Row { title: "Your own colours".into(), desc: "A hex colour such as #8b7bff replaces the wallpaper's colour everywhere (bar, launcher, popups, lock). Empty keeps the wallpaper's. Other roles can be set in config.toml under [colors]".into(), ctl: Ctl::Info(String::new()) }];
+    for (role, label) in roles {
+        rows.push(text(snap, label, "", &format!("colors.{role}"), "from the wallpaper"));
+    }
+    rows
+}
+
+fn launcher_rows(snap: &Snapshot) -> Vec<Row> {
+    vec![
+        choice(snap, "Where it opens", "", "launcher.position", vec![(s("top"), "Under the bar"), (s("center"), "Middle of the screen")]),
+        num(snap, "Width", "", "launcher.width", 400.0, 1100.0, 20.0, true, " px"),
+        num(snap, "Gap under the bar", "Only when it opens under the bar", "launcher.gap", 0.0, 200.0, 4.0, true, " px"),
+        num(snap, "Results shown", "How many rows before it scrolls", "launcher.rows", 3.0, 14.0, 1.0, true, ""),
+        num(snap, "Row height", "", "launcher.row_height", 32.0, 72.0, 2.0, true, " px"),
+        num(snap, "Icon size", "", "launcher.icon_size", 16.0, 64.0, 2.0, true, " px"),
+    ]
 }
 
 fn apps(snap: &Snapshot) -> Vec<Section> {
@@ -785,7 +825,7 @@ fn apps(snap: &Snapshot) -> Vec<Section> {
     }
     auto_rows.push(Row { title: "Add a program".into(), desc: "Type its command, then press Enter. It starts with every login".into(), ctl: Ctl::Text { path: "autostart.+".into(), val: String::new(), hint: "command".into() } });
     rows.truncate(3);
-    vec![section("Default apps", rows), section("Start at login", auto_rows)]
+    vec![section("Default apps", rows), section("Launcher (Mod+Space)", launcher_rows(snap)), section("Start at login", auto_rows)]
 }
 
 fn lock(snap: &Snapshot) -> Vec<Section> {
@@ -809,54 +849,55 @@ fn lock(snap: &Snapshot) -> Vec<Section> {
     ]
 }
 
-fn keys() -> Vec<Section> {
+/// Shortcuts you can change (type a new key, for example `Mod+Shift+Q`; separate several with commas; empty = the default),
+/// then the ones that are fixed.
+fn keys(snap: &Snapshot) -> Vec<Section> {
+    let mut out: Vec<Section> = Vec::new();
+    for b in vesper_config::keys::BINDS {
+        if out.last().map(|s| s.title.as_str()) != Some(b.section) {
+            out.push(section(b.section, Vec::new()));
+        }
+        let path = format!("keys.{}", b.id);
+        let val = match snap.get(&path) {
+            Some(Val::Str(v)) if !v.trim().is_empty() => v,
+            _ => b.default.to_string(),
+        };
+        let changed = val != b.default;
+        out.last_mut().unwrap().rows.push(Row {
+            title: b.label.into(),
+            desc: if changed { format!("Default: {}", b.default) } else { String::new() },
+            ctl: Ctl::Text { path, val, hint: b.default.into() },
+        });
+    }
+    // shortcuts that enabled plugins add
+    let mut plug: Vec<Row> = Vec::new();
+    for p in vesper_config::plugins::active(&snap.list("plugins.enabled")).into_iter().filter(|p| p.can("keys")) {
+        for key in &p.manifest.key {
+            let id = vesper_config::plugins::key_id(&p.id, &key.id);
+            let path = format!("keys.{id}");
+            let val = match snap.get(&path) {
+                Some(Val::Str(v)) if !v.trim().is_empty() => v,
+                _ => key.default.clone(),
+            };
+            plug.push(Row { title: if key.label.is_empty() { key.id.clone() } else { key.label.clone() }, desc: format!("From the plugin {}", p.manifest.name), ctl: Ctl::Text { path, val, hint: key.default.clone() } });
+        }
+    }
+    if !plug.is_empty() {
+        out.push(section("From plugins", plug));
+    }
     let k = |a: &str, b: &str| Row { title: a.into(), desc: String::new(), ctl: Ctl::Info(b.into()) };
-    vec![
-        section(
-            "Applications",
-            vec![
-                k("Terminal", "Mod + Enter"),
-                k("App launcher", "Mod + Space"),
-                k("File manager", "Mod + E"),
-                k("Settings", "Mod + ,"),
-                k("Blur the focused window's app", "Mod + B"),
-                k("Wallpaper picker", "Mod + W"),
-                k("Notification centre", "Mod + N"),
-                k("Power menu", "Mod + Shift + P"),
-            ],
-        ),
-        section(
-            "Windows",
-            vec![
-                k("Close window", "Mod + Q"),
-                k("Move focus", "Mod + arrows, or H J K (Mod + L locks)"),
-                k("Go to workspace 1 – 10", "Mod + 1 … 9, 0"),
-                k("Send the window to workspace 1 – 10", "Mod + Shift + 1 … 9, 0"),
-                k("Move a column or window to a workspace", "Mod + Shift + arrows / H J K L"),
-                k("Stack into the column on the left / take out", "Mod + [ / Mod + ]"),
-                k("Focus up / down inside a column", "Mod + Alt + ↑ / ↓"),
-                k("Cycle column width", "Mod + R"),
-                k("Make a column narrower / wider", "Mod + − / ="),
-                k("Fullscreen", "Mod + F"),
-                k("Float or tile", "Mod + V"),
-                k("Minimize / restore last", "Mod + M / Mod + Shift + M"),
-                k("Move or resize a floating window", "Mod + drag with left / right button"),
-            ],
-        ),
-        section(
-            "System",
-            vec![
-                k("Lock the screen", "Mod + L, or Ctrl + Alt + L"),
-                k("Open the start menu", "Mod + Esc"),
-                k("Switch windows", "Mod + Tab (Tab cycles, release or Enter picks)"),
-                k("Clipboard history", "Mod + Shift + V"),
-                k("Emoji picker", "Mod + ."),
-                k("Screenshot: screen / window / region", "Print / Alt + Print / Shift + Print"),
-                k("Switch to a text console", "Ctrl + Alt + F1 – F12"),
-                k("Quit Vesper", "Mod + Shift + E"),
-            ],
-        ),
-    ]
+    out.push(section(
+        "Fixed shortcuts",
+        vec![
+            Row { title: "How to write a shortcut".into(), desc: "Mod is Super (or Alt, see Keyboard & mouse). Examples: Mod+Shift+Q, Ctrl+Alt+T, Print, or two keys: Mod+Left, Mod+H".into(), ctl: Ctl::Info(String::new()) },
+            k("Go to workspace 1 – 10", "Mod + 1 … 9, 0"),
+            k("Send the window to workspace 1 – 10", "Mod + Shift + 1 … 9, 0"),
+            k("Move or resize a floating window", "Mod + drag with left / right button"),
+            k("Switch to a text console", "Ctrl + Alt + F1 – F12"),
+            k("Volume, brightness and media keys", "The keys on your keyboard"),
+        ],
+    ));
+    out
 }
 
 fn about() -> Vec<Section> {
@@ -909,11 +950,15 @@ pub fn apply(path: &str, val: &Val) -> Result<(), String> {
         let parts: Vec<String> = key.split('.').map(String::from).collect();
         return Config::edit(|t| push_item(t, &parts, item)).map_err(|e| e.to_string());
     }
-    match val.to_toml() {
+    let res = match val.to_toml() {
         Some(v) => Config::set(path, v),
         None => Config::unset(path),
     }
-    .map_err(|e| e.to_string())
+    .map_err(|e| e.to_string());
+    if path.starts_with("colors.") {
+        vesper_config::theme::touch_colors();
+    }
+    res
 }
 
 /// Append `item` to the array at `path` (creating tables on the way).
@@ -1180,6 +1225,9 @@ fn plugins_page(snap: &Snapshot) -> Vec<Section> {
         }
         if p.too_new {
             desc = format!("Needs a newer Vesper (plugin API {})", m.api);
+        } else {
+            let can: Vec<&str> = plugins::PERMISSIONS.iter().copied().filter(|f| p.can(f)).collect();
+            desc = format!("{desc}{}Allowed to: {}", if desc.is_empty() { "" } else { " \u{b7} " }, if can.is_empty() { "nothing".to_string() } else { can.join(", ") });
         }
         let mut buttons = vec![(if p.enabled { "Turn off" } else { "Turn on" }.to_string(), Act::PluginToggle(p.id.clone()))];
         if p.dir.starts_with(&mine) {
@@ -1211,7 +1259,7 @@ fn plugins_page(snap: &Snapshot) -> Vec<Section> {
             "Write your own",
             vec![Row {
                 title: "A plugin is a folder with a plugin.toml".into(),
-                desc: "It can start a program, add bar widgets and add launcher actions. See docs/plugins.md and the plugin template".into(),
+                desc: "It can run programs, react to desktop events, add shortcuts, bar widgets and launcher results. See docs/plugins.md and the plugin template".into(),
                 ctl: Ctl::Info(String::new()),
             }],
         ),

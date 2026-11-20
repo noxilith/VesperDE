@@ -30,10 +30,14 @@ pub enum Slider {
     Night,
     /// One app's own volume in the mixer (index into Popup.apps).
     App(usize),
+    /// The microphone level in the microphone panel.
+    Mic,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
+#[allow(dead_code)]
 pub enum StartAct {
+    PowerMenu,
     Settings,
     Clipboard,
     Emoji,
@@ -80,6 +84,8 @@ pub enum PHit {
     Month(i32),
     Profile(usize),
     Net(usize),
+    /// The refresh button of the Wi-Fi panel.
+    WifiRefresh,
 }
 
 pub type Rect = (i32, i32, i32, i32);
@@ -126,6 +132,11 @@ pub fn side_for(t: crate::quick::Tile) -> Option<Side> {
     }
 }
 
+/// The default microphone's level in percent.
+fn read_mic_percent() -> u32 {
+    run("wpctl", &["get-volume", "@DEFAULT_AUDIO_SOURCE@"]).and_then(|s| crate::sys::parse_volume(&s)).map_or(0, |v| v.percent)
+}
+
 fn read_sources() -> Vec<Sink> {
     wpctl_nodes("Sources")
 }
@@ -155,7 +166,12 @@ pub struct Popup {
     pub profile: String,
     pub nets: Vec<Wifi>,
     pub nets_error: Option<String>,
-    pub battery_note: String,
+    /// Label and value rows of the battery popup (status, time left, health, power draw, size, cycles).
+    pub battery_rows: Vec<(String, String)>,
+    /// The output volume and whether it is muted, and the microphone level (set when the popup is drawn or a panel opens).
+    pub vol: (u32, bool),
+    pub mic_percent: u32,
+    pub bright: Option<u32>,
     pub hits: Vec<(Rect, PHit)>,
     pub rect: Rect,
     /// Restart or shut down waits for a second click.
@@ -184,7 +200,10 @@ impl Popup {
             profile: String::new(),
             nets: Vec::new(),
             nets_error: None,
-            battery_note: String::new(),
+            battery_rows: Vec::new(),
+            vol: (0, false),
+            mic_percent: 0,
+            bright: None,
             hits: Vec::new(),
             rect: (0, 0, 0, 0),
             pending: None,
@@ -205,14 +224,21 @@ impl Popup {
                 p.quick = crate::quick::read(sys);
             }
             Kind::Battery => {
-                p.battery_note = battery_note();
+                p.battery_rows = battery_rows();
                 (p.profiles, p.profile) = read_profiles();
             }
-            Kind::Network => match read_wifi() {
-                Ok(n) => p.nets = n,
-                Err(e) => p.nets_error = Some(e),
-            },
-            Kind::Start => p.quick = crate::quick::read(sys),
+            Kind::Network => {
+                p.quick = crate::quick::read(sys);
+                match read_wifi() {
+                    Ok(n) => p.nets = n,
+                    Err(e) => p.nets_error = Some(e),
+                }
+            }
+            Kind::Start => {
+                p.quick = crate::quick::read(sys);
+                p.battery_rows = battery_rows();
+                (p.profiles, p.profile) = read_profiles();
+            }
             Kind::Brightness => {
                 p.quick = crate::quick::read(sys);
                 p.night_strength = vesper_config::Config::load().appearance.night_light_strength.clamp(1, 100);
@@ -256,9 +282,13 @@ impl Popup {
                 }
             },
             Side::Bluetooth => crate::bt::send(crate::bt::Cmd::Scan(true)),
-            Side::Sound => self.sinks = read_sinks(),
+            Side::Sound => {
+                self.sinks = read_sinks();
+                self.apps = read_apps();
+            }
             Side::Mic => {
                 self.sources = read_sources();
+                self.mic_percent = read_mic_percent();
                 let media = vesper_config::Config::load().media;
                 self.ptt = media.ptt;
                 self.ptt_key = media.ptt_key;
@@ -279,6 +309,7 @@ fn run(cmd: &str, args: &[&str]) -> Option<String> {
 
 /// Run a command without waiting for it on the UI thread.
 /// A screen recording is running (see scripts/vesper-record).
+#[allow(dead_code)]
 pub fn recording() -> bool {
     let dir = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".into());
     std::fs::read_to_string(format!("{dir}/vesper-record.pid")).ok().and_then(|p| p.trim().parse::<u32>().ok()).is_some_and(|p| std::path::Path::new(&format!("/proc/{p}")).exists())
@@ -408,28 +439,50 @@ fn read_profiles() -> (Vec<String>, String) {
     (names, cur.trim().to_string())
 }
 
-fn battery_note() -> String {
-    let Ok(dir) = std::fs::read_dir("/sys/class/power_supply") else { return String::new() };
-    let Some(bat) = dir.flatten().find(|e| e.file_name().to_string_lossy().starts_with("BAT")) else { return String::new() };
+/// The details shown in the battery popup, read from sysfs: only the rows the battery can answer.
+fn battery_rows() -> Vec<(String, String)> {
+    let Ok(dir) = std::fs::read_dir("/sys/class/power_supply") else { return Vec::new() };
+    let mut bats: Vec<_> = dir.flatten().filter(|e| e.file_name().to_string_lossy().starts_with("BAT")).collect();
+    bats.sort_by_key(|e| e.file_name());
+    let Some(bat) = bats.into_iter().next() else { return Vec::new() };
+    let name = bat.file_name().to_string_lossy().into_owned();
     let rd = |n: &str| std::fs::read_to_string(bat.path().join(n)).ok().and_then(|s| s.trim().parse::<f64>().ok());
     let status = std::fs::read_to_string(bat.path().join("status")).unwrap_or_default();
-    let status = status.trim();
-    // energy_* (µWh) with power_now (µW), or charge_* (µAh) with current_now (µA): both give hours
-    let (now, full, rate) = match (rd("energy_now"), rd("energy_full"), rd("power_now")) {
-        (Some(a), Some(b), Some(c)) => (a, b, c),
-        _ => (rd("charge_now").unwrap_or(0.0), rd("charge_full").unwrap_or(0.0), rd("current_now").unwrap_or(0.0)),
-    };
-    if rate <= 0.0 {
-        return String::new();
+    let status = status.trim().to_string();
+    let volts = rd("voltage_now").or_else(|| rd("voltage_min_design")).unwrap_or(0.0); // µV
+    // energy in µWh, from energy_* or from charge_* (µAh) times the voltage
+    let energy = |e: &str, c: &str| rd(e).or_else(|| rd(c).map(|v| v * volts / 1e6));
+    let (now, full, design) = (energy("energy_now", "charge_now"), energy("energy_full", "charge_full"), energy("energy_full_design", "charge_full_design"));
+    // power in µW, from power_now or from current_now (µA) times the voltage
+    let watts = rd("power_now").or_else(|| rd("current_now").map(|a| a * volts / 1e6)).filter(|w| *w > 0.0);
+    let mut rows = Vec::new();
+    if !status.is_empty() {
+        rows.push(("Status".to_string(), status.clone()));
     }
-    let hours = match status {
-        "Discharging" => now / rate,
-        "Charging" => (full - now).max(0.0) / rate,
-        _ => return String::new(),
-    };
-    let mins = (hours * 60.0).round() as u32;
-    let t = if mins >= 60 { format!("{}h {:02}m", mins / 60, mins % 60) } else { format!("{mins}m") };
-    if status == "Discharging" { format!("{t} left") } else { format!("{t} until full") }
+    if let (Some(rate), Some(now), Some(full)) = (watts, now, full) {
+        let hours = match status.as_str() {
+            "Discharging" => Some(("Time left", now / rate)),
+            "Charging" => Some(("Until full", (full - now).max(0.0) / rate)),
+            _ => None,
+        };
+        if let Some((label, h)) = hours {
+            let mins = (h * 60.0).round() as u32;
+            rows.push((label.to_string(), if mins >= 60 { format!("{}h {:02}m", mins / 60, mins % 60) } else { format!("{mins}m") }));
+        }
+    }
+    if let (Some(full), Some(design)) = (full, design.filter(|d| *d > 0.0)) {
+        rows.push((format!("Health ({name})"), format!("{}%", (full / design * 100.0).round() as u32)));
+    }
+    if let Some(w) = watts {
+        rows.push(("Power draw".to_string(), format!("{:.1} W", w / 1e6)));
+    }
+    if let Some(d) = design {
+        rows.push(("Battery size".to_string(), format!("{} Wh", (d / 1e6).round() as u32)));
+    }
+    if let Some(n) = rd("cycle_count").filter(|n| *n > 0.0) {
+        rows.push(("Charge cycles".to_string(), format!("{}", n as u32)));
+    }
+    rows
 }
 
 fn read_wifi() -> Result<Vec<Wifi>, String> {
@@ -456,7 +509,7 @@ fn read_wifi() -> Result<Vec<Wifi>, String> {
         }
     }
     nets.sort_by(|a, b| b.active.cmp(&a.active).then(b.signal.cmp(&a.signal)));
-    nets.truncate(8);
+    nets.truncate(10);
     Ok(nets)
 }
 
@@ -469,6 +522,7 @@ fn month_start(offset: i32) -> NaiveDate {
 impl Renderer {
     /// The brightness and volume sliders and the toggle tiles of the quick settings. Returns the height used.
     #[allow(clippy::too_many_arguments)]
+    #[allow(dead_code)]
     fn quick_block(&self, c: &mut Canvas, ix: i32, iw: i32, y: i32, q: crate::quick::Quick, sys: &Sys, hover: Option<PHit>, open: Option<Side>, hits: &mut Vec<(Rect, PHit)>) -> i32 {
         let accent = self.pal.primary;
         let mut cy = y;
@@ -600,7 +654,7 @@ impl Renderer {
             self.draw_bt_side(c, p, screen_w, hover);
             return;
         }
-        let pw = 300;
+        let pw = if matches!(side, Side::Sound | Side::Volume | Side::Mic | Side::Wifi | Side::Night | Side::Brightness) { 340 } else { 300 };
         let ph = self.side_height(p, side);
         let (mx, my, mw, _) = p.rect;
         let x = if mx + mw + 8 + pw <= screen_w - 8 { mx + mw + 8 } else { (mx - 8 - pw).max(8) };
@@ -623,6 +677,16 @@ impl Renderer {
 
     /// Height of the side panel `side`: title, rows and margins.
     fn side_height(&self, p: &Popup, side: Side) -> i32 {
+        if side == Side::Wifi {
+            return if p.prompt.is_some() { 14 + 40 + PROMPT_H + 10 } else { 14 + 40 + 24 + p.nets.len().clamp(1, 10) as i32 * 40 + 10 };
+        }
+        if matches!(side, Side::Sound | Side::Volume) {
+            let apps = if p.apps.is_empty() { 28 } else { p.apps.len().min(6) as i32 * 46 };
+            return 14 + 40 + 40 + 4 + 62 + 2 + 24 + if p.sinks.is_empty() { 30 } else { p.sinks.len().min(6) as i32 * 38 } + 6 + 24 + apps + 10;
+        }
+        if side == Side::Mic {
+            return 14 + 40 + 40 + 4 + 62 + 2 + 38 + 24 + if p.sources.is_empty() { 30 } else { p.sources.len().min(6) as i32 * 38 } + 10;
+        }
         let rows = match side {
             Side::Wifi => p.nets.len().max(1),
             Side::Bluetooth | Side::Night | Side::Brightness => 0,
@@ -633,10 +697,8 @@ impl Renderer {
         let mixer_h = if side == Side::Volume { 30 + if p.apps.is_empty() { 30 } else { p.apps.len().min(6) as i32 * 46 } } else { 0 };
         if side == Side::Wifi && p.prompt.is_some() {
             14 + 32 + PROMPT_H + 10
-        } else if side == Side::Night {
-            14 + 66 + 10
-        } else if side == Side::Brightness {
-            14 + 34 + 66 + 10
+        } else if matches!(side, Side::Night | Side::Brightness) {
+            14 + 40 + 40 + 4 + 62 + 2 + 40 + 10
         } else {
             14 + 32 + rows as i32 * 34 + 10 + mixer_h
         }
@@ -663,16 +725,20 @@ impl Renderer {
             }
             hits.push((r, hit));
         };
-        if side == Side::Night {
-            self.slider_row(c, ix, iw, cy, "Night light strength", p.night_strength, false, Slider::Night, &mut p.hits);
+        if matches!(side, Side::Night | Side::Brightness) {
+            self.draw_brightness_panel(c, p, x, my, pw, hover);
             return;
         }
-        if side == Side::Brightness {
-            let on = p.quick.night;
-            let tile = PHit::Tile(crate::quick::Tile::NightLight);
-            row(c, &mut p.hits, cy, on, hover == Some(tile), "Night light", if on { "on" } else { "off" }, tile);
-            cy += 34;
-            self.slider_row(c, ix, iw, cy, "Night light strength", p.night_strength, false, Slider::Night, &mut p.hits);
+        if side == Side::Wifi {
+            self.draw_wifi_panel(c, p, x, my, pw, hover);
+            return;
+        }
+        if matches!(side, Side::Sound | Side::Volume) {
+            self.draw_sound_panel(c, p, x, my, pw, hover);
+            return;
+        }
+        if side == Side::Mic {
+            self.draw_mic_panel(c, p, x, my, pw, hover);
             return;
         }
         if with_title {
@@ -763,6 +829,266 @@ impl Renderer {
         }
     }
 
+    /// Title row of the sound and microphone panels: a glyph, the title and a thin line under it. Returns the height used.
+    /// Height of the start menu for what there is to show.
+    fn start_height(&self, _p: &Popup, sys: &Sys) -> i32 {
+        14 + 52 + 24 + 4 + (4 * 58 + 3 * 8 + 10) + (56 + 14) + 40 + 40 + 8 + if sys.battery.is_some() { 58 + 10 } else { 0 } + 26 + 2 + (84 + 12) + 1 + 10 + 38 + 14
+    }
+
+    fn panel_head(&self, c: &mut Canvas, ix: i32, iw: i32, y: i32, glyph: &str, title: &str) -> i32 {
+        let accent = self.pal.primary;
+        self.text.resized(18.0).draw_centered(c, ix + 10, y + 14, glyph, accent);
+        self.text.resized(17.0).draw(c, ix + 32, y + 14, title, self.pal.on_surface);
+        c.fill_rect(ix, y + 32, iw, 1, with_alpha(self.pal.on_surface, 0.14));
+        40
+    }
+
+    /// A small upper-case label such as OUTPUT. Returns the height used.
+    fn section_label(&self, c: &mut Canvas, ix: i32, y: i32, text: &str) -> i32 {
+        self.text.resized(11.0).draw(c, ix, y + 8, &text.to_uppercase(), with_alpha(self.pal.on_surface, 0.6));
+        24
+    }
+
+    /// A title with a one-line description and an on/off switch on the right. Returns the height used.
+    #[allow(clippy::too_many_arguments)]
+    fn switch_row(&self, c: &mut Canvas, ix: i32, iw: i32, y: i32, title: &str, desc: &str, on: bool, hit: PHit, hover: Option<PHit>, hits: &mut Vec<(Rect, PHit)>) -> i32 {
+        let accent = self.pal.primary;
+        self.text.draw(c, ix, y + 11, title, self.pal.on_surface);
+        let small = self.text.resized(11.5);
+        let mut line = String::new();
+        let mut ly = y + 31;
+        let mut lines = 0;
+        for word in desc.split_whitespace() {
+            let next = if line.is_empty() { word.to_string() } else { format!("{line} {word}") };
+            if small.width(&next) > iw - 64 && !line.is_empty() {
+                small.draw(c, ix, ly, &line, with_alpha(self.pal.on_surface, 0.6));
+                ly += 15;
+                lines += 1;
+                line = word.to_string();
+                if lines == 2 {
+                    break;
+                }
+            } else {
+                line = next;
+            }
+        }
+        if lines < 2 && !line.is_empty() {
+            small.draw(c, ix, ly, &small.fit(&line, iw - 64), with_alpha(self.pal.on_surface, 0.6));
+        }
+        let (sw, sh) = (46, 26);
+        let sx = ix + iw - sw;
+        let sy = y + 6;
+        let track = if on { accent } else { with_alpha(self.pal.on_surface, if hover == Some(hit) { 0.26 } else { 0.18 }) };
+        c.rounded_rect(sx, sy, sw, sh, sh as f32 / 2.0, track);
+        let kx = if on { sx + sw - 13 } else { sx + 13 };
+        c.circle(kx, sy + sh / 2, 9, if on { self.pal.on_primary } else { self.pal.on_surface });
+        hits.push(((ix, y, ix + iw, y + 44), hit));
+        62
+    }
+
+    /// A slider with a glyph on the left and the percentage on the right. `max` is the value at the right end.
+    #[allow(clippy::too_many_arguments)]
+    fn icon_slider(&self, c: &mut Canvas, ix: i32, iw: i32, y: i32, glyph: &str, pct: u32, max: u32, id: Slider, icon_hit: Option<PHit>, hover: Option<PHit>, hits: &mut Vec<(Rect, PHit)>) -> i32 {
+        let accent = self.pal.primary;
+        let pct = pct.min(max);
+        let lit = icon_hit.is_some() && hover == icon_hit;
+        if lit {
+            c.rounded_rect(ix - 4, y + 4, 28, 28, 14.0, with_alpha(accent, 0.2));
+        }
+        self.text.resized(17.0).draw_centered(c, ix + 10, y + 18, glyph, self.pal.on_surface);
+        if let Some(h) = icon_hit {
+            hits.push(((ix - 4, y + 4, ix + 24, y + 32), h));
+        }
+        let value = format!("{pct}%");
+        let vw = self.text.width(&value);
+        self.text.draw(c, ix + iw - vw, y + 18, &value, if pct > 100 { self.pal.error } else { self.pal.on_surface });
+        let (tx, tw) = (ix + 34, iw - 34 - vw - 12);
+        let ty = y + 14;
+        c.rounded_rect(tx, ty, tw, 8, 4.0, with_alpha(accent, 0.25));
+        let filled = (tw as f32 * pct as f32 / max as f32) as i32;
+        if filled > 0 {
+            c.rounded_rect(tx, ty, filled.max(8), 8, 4.0, if pct > 100 { self.pal.error } else { accent });
+        }
+        if max > 100 {
+            let mx = tx + (tw as f32 * 100.0 / max as f32) as i32;
+            c.rounded_rect(mx - 1, ty - 4, 2, 16, 1.0, with_alpha(self.pal.on_surface, 0.6));
+        }
+        c.circle(tx + filled, ty + 4, 8, accent);
+        hits.push(((tx - 8, y + 4, tx + tw + 8, y + 32), PHit::Slider(id)));
+        40
+    }
+
+    /// A device row: highlighted with a tick when it is the one in use.
+    fn device_row(&self, c: &mut Canvas, ix: i32, iw: i32, y: i32, label: &str, active: bool, hit: PHit, hover: Option<PHit>, hits: &mut Vec<(Rect, PHit)>) -> i32 {
+        let accent = self.pal.primary;
+        let hot = hover == Some(hit);
+        let fill = if active { with_alpha(accent, 0.2) } else if hot { with_alpha(self.pal.on_surface, 0.12) } else { with_alpha(self.pal.on_surface, 0.06) };
+        c.rounded_rect(ix, y, iw, 34, 10.0, fill);
+        if active {
+            c.rounded_outline(ix, y, iw, 34, 10.0, 1.0, with_alpha(accent, 0.5));
+        }
+        self.text.draw(c, ix + 12, y + 17, &self.text.fit(label, iw - 56), self.pal.on_surface);
+        if active {
+            self.text.resized(15.0).draw_centered(c, ix + iw - 20, y + 17, "\u{f012c}", self.pal.on_surface_variant);
+        }
+        hits.push(((ix, y, ix + iw, y + 34), hit));
+        38
+    }
+
+    /// The Wi-Fi panel: the radio switch and a refresh button, then the networks with their signal; a secured one you are not
+    /// saved on asks for its password first.
+    fn draw_wifi_panel(&self, c: &mut Canvas, p: &mut Popup, x: i32, my: i32, pw: i32, hover: Option<PHit>) {
+        let accent = self.pal.primary;
+        let muted_c = with_alpha(self.pal.on_surface, 0.6);
+        let (ix, iw) = (x + 16, pw - 32);
+        let mut cy = my + 14;
+        let on = p.quick.wifi;
+        self.text.resized(18.0).draw_centered(c, ix + 10, cy + 14, if on { "\u{f05a9}" } else { "\u{f05aa}" }, accent);
+        self.text.resized(17.0).draw(c, ix + 32, cy + 14, "Wi-Fi", self.pal.on_surface);
+        // the switch on the far right, the refresh button beside it
+        let (sw, sh) = (46, 26);
+        let sx = ix + iw - sw;
+        let track = if on { accent } else { with_alpha(self.pal.on_surface, if hover == Some(PHit::Tile(crate::quick::Tile::Wifi)) { 0.26 } else { 0.18 }) };
+        c.rounded_rect(sx, cy + 1, sw, sh, sh as f32 / 2.0, track);
+        c.circle(if on { sx + sw - 13 } else { sx + 13 }, cy + 1 + sh / 2, 9, if on { self.pal.on_primary } else { self.pal.on_surface });
+        p.hits.push(((sx, cy, sx + sw, cy + 28), PHit::Tile(crate::quick::Tile::Wifi)));
+        let rr = (sx - 40, cy, sx - 8, cy + 28);
+        if hover == Some(PHit::WifiRefresh) {
+            c.rounded_rect(rr.0, rr.1, 32, 28, 9.0, with_alpha(self.pal.on_surface, 0.12));
+        }
+        self.text.resized(17.0).draw_centered(c, rr.0 + 16, cy + 14, "\u{f0450}", accent);
+        p.hits.push((rr, PHit::WifiRefresh));
+        c.fill_rect(ix, cy + 32, iw, 1, with_alpha(self.pal.on_surface, 0.14));
+        cy += 40;
+        if let Some(pr) = p.prompt.clone() {
+            self.draw_prompt(c, ix, iw, cy, &pr, hover, &mut p.hits);
+            return;
+        }
+        cy += self.section_label(c, ix, cy, "Networks");
+        if p.nets.is_empty() {
+            let msg = p.nets_error.clone().unwrap_or_else(|| if on { "No networks found".into() } else { "Wi-Fi is off".into() });
+            self.text.draw(c, ix, cy + 14, &self.text.fit(&msg, iw), muted_c);
+        }
+        for (i, n) in p.nets.clone().iter().enumerate() {
+            let hot = hover == Some(PHit::Net(i));
+            let fill = if n.active { with_alpha(accent, 0.2) } else if hot { with_alpha(self.pal.on_surface, 0.12) } else { with_alpha(self.pal.on_surface, 0.0) };
+            c.rounded_rect(ix, cy, iw, 36, 10.0, fill);
+            if n.active {
+                c.rounded_outline(ix, cy, iw, 36, 10.0, 1.0, with_alpha(accent, 0.5));
+            }
+            let bars = match n.signal {
+                0..=25 => "\u{f091f}",
+                26..=50 => "\u{f0922}",
+                51..=75 => "\u{f0925}",
+                _ => "\u{f0928}",
+            };
+            self.text.resized(18.0).draw_centered(c, ix + 20, cy + 18, bars, if n.active { accent } else { self.pal.on_surface });
+            self.text.draw(c, ix + 40, cy + 18, &self.text.fit(&n.ssid, iw - 40 - 36), self.pal.on_surface);
+            if n.active {
+                self.text.resized(15.0).draw_centered(c, ix + iw - 18, cy + 18, "\u{f012c}", self.pal.on_surface_variant);
+            } else if n.secure {
+                self.text.resized(14.0).draw_centered(c, ix + iw - 18, cy + 18, "\u{f033e}", muted_c);
+            }
+            p.hits.push(((ix, cy, ix + iw, cy + 36), PHit::Net(i)));
+            cy += 40;
+        }
+    }
+
+    /// The brightness panel: screen brightness, then the night light switch and its strength.
+    fn draw_brightness_panel(&self, c: &mut Canvas, p: &mut Popup, x: i32, my: i32, pw: i32, hover: Option<PHit>) {
+        let (ix, iw) = (x + 16, pw - 32);
+        let mut cy = my + 14;
+        cy += self.panel_head(c, ix, iw, cy, "\u{f00df}", "Brightness");
+        match p.bright {
+            Some(b) => cy += self.icon_slider(c, ix, iw, cy, "\u{f00df}", b, 100, Slider::Brightness, None, hover, &mut p.hits),
+            None => {
+                self.text.draw(c, ix, cy + 18, &self.text.fit("No adjustable screen backlight", iw), with_alpha(self.pal.on_surface, 0.6));
+                cy += 40;
+            }
+        }
+        cy += 4;
+        cy += self.switch_row(c, ix, iw, cy, "Night light", "Warms the screen colours in the evening.", p.quick.night, PHit::Tile(crate::quick::Tile::NightLight), hover, &mut p.hits);
+        cy += 2;
+        self.icon_slider(c, ix, iw, cy, "\u{f0594}", p.night_strength, 100, Slider::Night, None, hover, &mut p.hits);
+    }
+
+    /// The sound panel: volume slider, boost, output devices and the per-app mixer.
+    fn draw_sound_panel(&self, c: &mut Canvas, p: &mut Popup, x: i32, my: i32, pw: i32, hover: Option<PHit>) {
+        let muted_c = with_alpha(self.pal.on_surface, 0.6);
+        let (ix, iw) = (x + 16, pw - 32);
+        let mut cy = my + 14;
+        cy += self.panel_head(c, ix, iw, cy, "\u{f057e}", "Sound");
+        let (pct, is_muted) = p.vol;
+        let boost = self.volume_max > 100;
+        let max = if boost { 150 } else { 100 }.max(pct.min(150));
+        let glyph = if is_muted { "\u{f0581}" } else { "\u{f057e}" };
+        cy += self.icon_slider(c, ix, iw, cy, glyph, pct, max, Slider::Volume, Some(PHit::Mute), hover, &mut p.hits);
+        cy += 4;
+        cy += self.switch_row(c, ix, iw, cy, "Boost volume", "Allow up to 150 %. Above 100 % can distort.", boost, PHit::Boost, hover, &mut p.hits);
+        cy += 2;
+        cy += self.section_label(c, ix, cy, "Output");
+        if p.sinks.is_empty() {
+            self.text.draw(c, ix, cy + 14, "No output devices", muted_c);
+            cy += 30;
+        }
+        for (i, s) in p.sinks.clone().iter().enumerate().take(6) {
+            cy += self.device_row(c, ix, iw, cy, &s.label, s.default, PHit::Sink(i), hover, &mut p.hits);
+        }
+        cy += 6;
+        cy += self.section_label(c, ix, cy, "Apps");
+        if p.apps.is_empty() {
+            self.text.draw(c, ix, cy + 8, "No app is playing sound right now", muted_c);
+        }
+        let accent = self.pal.primary;
+        for (i, a) in p.apps.clone().iter().enumerate().take(6) {
+            let label = self.text.fit(&a.label, iw - 56);
+            self.text.resized(13.0).draw(c, ix, cy + 8, &label, if a.muted { muted_c } else { self.pal.on_surface });
+            let v = format!("{}%", a.percent);
+            self.text.resized(13.0).draw(c, ix + iw - self.text.width(&v), cy + 8, &v, muted_c);
+            let ty = cy + 22;
+            c.rounded_rect(ix, ty, iw, 6, 3.0, with_alpha(accent, 0.25));
+            let filled = (iw as f32 * a.percent.min(100) as f32 / 100.0) as i32;
+            if filled > 0 {
+                c.rounded_rect(ix, ty, filled.max(6), 6, 3.0, accent);
+            }
+            c.circle(ix + filled, ty + 3, 6, accent);
+            p.hits.push(((ix - 8, cy + 16, ix + iw + 8, cy + 38), PHit::Slider(Slider::App(i))));
+            cy += 46;
+        }
+    }
+
+    /// The microphone panel: level, push to talk and the input devices.
+    fn draw_mic_panel(&self, c: &mut Canvas, p: &mut Popup, x: i32, my: i32, pw: i32, hover: Option<PHit>) {
+        let muted_c = with_alpha(self.pal.on_surface, 0.6);
+        let (ix, iw) = (x + 16, pw - 32);
+        let mut cy = my + 14;
+        let live = p.quick.mic;
+        cy += self.panel_head(c, ix, iw, cy, if live { "\u{f036c}" } else { "\u{f036d}" }, "Microphone");
+        let glyph = if live { "\u{f036c}" } else { "\u{f036d}" };
+        let shown = if live { p.mic_percent } else { 0 };
+        cy += self.icon_slider(c, ix, iw, cy, glyph, shown, 100, Slider::Mic, Some(PHit::Tile(crate::quick::Tile::Mic)), hover, &mut p.hits);
+        cy += 4;
+        let key = if p.ptt_key.is_empty() { "the mic key".to_string() } else { format!("the mic key ({})", p.ptt_key) };
+        cy += self.switch_row(c, ix, iw, cy, "Push to talk", &format!("Mic stays muted; hold {key} to talk."), p.ptt, PHit::Ptt, hover, &mut p.hits);
+        cy += 2;
+        let learn = (ix, cy, ix + iw, cy + 30);
+        let hot = hover == Some(PHit::PttLearn);
+        c.rounded_rect(ix, cy, iw, 30, 9.0, with_alpha(self.pal.on_surface, if hot { 0.16 } else { 0.08 }));
+        self.text.draw(c, ix + 10, cy + 15, "Set the key\u{2026}", self.pal.on_surface);
+        if !p.ptt_key.is_empty() {
+            self.text.draw(c, ix + iw - 10 - self.text.width(&p.ptt_key), cy + 15, &p.ptt_key, muted_c);
+        }
+        p.hits.push((learn, PHit::PttLearn));
+        cy += 38;
+        cy += self.section_label(c, ix, cy, "Input");
+        if p.sources.is_empty() {
+            self.text.draw(c, ix, cy + 14, "No microphones", muted_c);
+        }
+        for (i, s) in p.sources.clone().iter().enumerate().take(6) {
+            cy += self.device_row(c, ix, iw, cy, &s.label, s.default, PHit::Source(i), hover, &mut p.hits);
+        }
+    }
+
     /// The password prompt for `pr` at (ix, y), `iw` wide. Returns the height used.
     fn draw_prompt(&self, c: &mut Canvas, ix: i32, iw: i32, y: i32, pr: &Prompt, hover: Option<PHit>, hits: &mut Vec<(Rect, PHit)>) -> i32 {
         let accent = self.pal.primary;
@@ -805,6 +1131,7 @@ impl Renderer {
     /// A labelled slider row at (ix, y): the label on the left, the percentage on the right, the track below.
     /// Records the grab area and returns the height it used.
     #[allow(clippy::too_many_arguments)]
+    #[allow(dead_code)]
     fn slider_row(&self, c: &mut Canvas, ix: i32, iw: i32, y: i32, label: &str, pct: u32, dim: bool, id: Slider, hits: &mut Vec<(Rect, PHit)>) -> i32 {
         self.slider_row_with(c, ix, iw, y, label, pct, dim, id, None, hits)
     }
@@ -877,12 +1204,14 @@ impl Renderer {
 
     /// Draw the popup into the overlay canvas (`w` x `h` pixels) and record its clickable parts.
     pub fn draw_popup(&mut self, canvas: &mut [u8], w: u32, h: u32, p: &mut Popup, sys: &Sys, hover: Option<PHit>) {
+        p.bright = sys.brightness;
+        p.vol = sys.volume.map_or((0, false), |v| (v.percent, v.muted));
         let mut c = Canvas::new(canvas, w, h);
         c.clear([0, 0, 0, 0]);
         let accent = self.pal.primary;
         let (bw, bh) = match p.kind {
-            Kind::Brightness => (320, self.side_height(p, Side::Brightness) + 66),
-            Kind::Start => (370, 14 + 46 + 94 + (66 * 2 + 8 + 68 * 2 + 8) + 16 + 24 + 34 * if sys.stats.and_then(|s| s.temp).is_some() { 3 } else { 2 } + 8 + 58 + 10),
+            Kind::Brightness => (340, self.side_height(p, Side::Brightness)),
+            Kind::Start => (400, self.start_height(p, sys)),
             Kind::Calendar => {
                 let first = month_start(p.month_offset);
                 let lead = first.weekday().num_days_from_monday() as i32;
@@ -890,9 +1219,9 @@ impl Renderer {
                 let rows = (lead + days + 6) / 7;
                 (288, 14 + 38 + 26 + rows * 34 + 10)
             }
-            Kind::Volume => (320, self.side_height(p, Side::Volume) - 32 + 66),
-            Kind::Battery => (290, 14 + 64 + 28 + if p.profiles.is_empty() { 0 } else { 30 + 38 } + 10),
-            Kind::Network => (320, self.side_height(p, Side::Wifi)),
+            Kind::Volume => (340, self.side_height(p, Side::Volume)),
+            Kind::Battery => (320, 14 + 32 + 46 + 26 * p.battery_rows.len() as i32 + if p.profiles.is_empty() { 0 } else { 8 + 30 + 38 } + 10),
+            Kind::Network => (340, self.side_height(p, Side::Wifi)),
             Kind::Drives => (320, 14 + 32 + 38 * sys.drives.len().max(1) as i32 + 10),
         };
         let x = (p.anchor - bw / 2).clamp(8, (w as i32 - bw - 8).max(8));
@@ -910,94 +1239,167 @@ impl Renderer {
 
         match p.kind {
             Kind::Start => {
-                let os = vesper_apps::distro::os_release();
-                let name = os.get("NAME").or_else(|| os.get("PRETTY_NAME")).cloned().unwrap_or_else(|| "Start".into());
-                // tools along the top, right to left: settings, wallpapers, screenshot, copy text, read QR code
-                let tools = [
-                    (StartAct::Settings, "Settings", "\u{f0493}"),
-                    (StartAct::Wallpapers, "Wallpapers", "\u{f02e9}"),
-                    (StartAct::Screenshot, "Screenshot", "\u{f0100}"),
-                    (StartAct::CopyText, "Copy text from the screen", "\u{f113d}"),
-                    (StartAct::ReadQr, "Read a QR code", "\u{f0432}"),
-                    (StartAct::Record, "Record the screen", "\u{f044a}"),
-                ];
-                let mut label = name.clone();
+                let dim = with_alpha(self.pal.on_surface, 0.6);
+                let line = with_alpha(self.pal.on_surface, 0.12);
+                // ---- who: an avatar with the first letter, the user and the machine, and the tools on the right
+                let user = std::env::var("USER").unwrap_or_else(|_| "user".into());
+                let host = std::fs::read_to_string("/etc/hostname").map(|s| s.trim().to_string()).unwrap_or_default();
+                let initial = user.chars().next().map_or("?".to_string(), |ch| ch.to_uppercase().to_string());
+                c.circle(ix + 22, cy + 22, 22, with_alpha(accent, 0.18));
+                c.circle(ix + 22, cy + 22, 21, self.pal.surface_container_high);
+                c.rounded_outline(ix, cy, 44, 44, 22.0, 1.5, accent);
+                self.text.resized(18.0).draw_centered(&mut c, ix + 22, cy + 22, &initial, accent);
+                self.text.resized(16.0).draw(&mut c, ix + 56, cy + 14, &user, self.pal.on_surface);
+                self.text.resized(12.0).draw(&mut c, ix + 56, cy + 33, &host, dim);
+                let tools = [(StartAct::Settings, "\u{f0493}"), (StartAct::Apps, "\u{f0570}"), (StartAct::Clipboard, "\u{f0ea}"), (StartAct::Wallpapers, "\u{f02e9}")];
                 let mut bx = ix + iw;
-                let mut left_edge = bx;
-                for (act, tip, glyph) in tools {
-                    bx -= 34;
-                    let r = (bx, cy, bx + 34, cy + 34);
-                    let hot = hover == Some(PHit::Start(act));
-                    button(&mut c, r, act == StartAct::Record && recording(), hot);
-                    self.text.draw_centered(&mut c, bx + 17, cy + 17, glyph, if act == StartAct::Record && recording() { self.pal.on_primary } else { accent });
-                    p.hits.push((r, PHit::Start(act)));
-                    if hot {
-                        label = tip.to_string();
+                for (act, glyph) in tools {
+                    bx -= 36;
+                    let r = (bx, cy + 4, bx + 36, cy + 40);
+                    if hover == Some(PHit::Start(act)) {
+                        c.rounded_rect(r.0, r.1, 36, 36, 10.0, with_alpha(self.pal.on_surface, 0.12));
                     }
-                    left_edge = bx;
-                    bx -= 6;
-                }
-                let shown = self.text.fit(&label, (left_edge - ix - 10).max(40));
-                self.text.draw(&mut c, ix, cy + 17, &shown, if label == name { accent } else { self.pal.on_surface });
-                cy += 46;
-                let half = (iw - 8) / 2;
-                for (i, (act, label, glyph)) in [(StartAct::Apps, "Apps", "\u{f0570}"), (StartAct::Files, "Files", "\u{f024b}"), (StartAct::Clipboard, "Clipboard", "\u{f0ea}"), (StartAct::Emoji, "Emoji", "\u{f118}")].into_iter().enumerate() {
-                    let (col, row) = (i as i32 % 2, i as i32 / 2);
-                    let bx = ix + col * (half + 8);
-                    let by = cy + row * 44;
-                    let r = (bx, by, bx + half, by + 36);
-                    button(&mut c, r, false, hover == Some(PHit::Start(act)));
-                    self.text.draw_centered(&mut c, bx + half / 2 - self.text.width(label) / 2 - 4, by + 18, glyph, accent);
-                    self.text.draw_centered(&mut c, bx + half / 2 + 14, by + 18, label, self.pal.on_surface);
+                    self.text.resized(17.0).draw_centered(&mut c, bx + 18, cy + 22, glyph, self.pal.on_surface);
                     p.hits.push((r, PHit::Start(act)));
+                    bx -= 2;
                 }
-                cy += 94;
-                cy += self.quick_block(&mut c, ix, iw, cy, p.quick, sys, hover, p.side, &mut p.hits) + 16;
-                self.text.draw(&mut c, ix, cy + 6, "System", muted);
-                cy += 24;
-                let rows: Vec<(&str, String, u32)> = match sys.stats {
-                    Some(s) => {
-                        let mut v = vec![("CPU", format!("{}%", s.cpu), s.cpu), ("Memory", format!("{}%", s.mem), s.mem)];
-                        if let Some(t) = s.temp {
-                            v.push(("Temperature", format!("{t}\u{b0}C"), t.min(100)));
-                        }
-                        v
-                    }
-                    None => vec![("CPU", "\u{2026}".into(), 0), ("Memory", "\u{2026}".into(), 0)],
+                cy += 52;
+                cy += self.section_label(&mut c, ix, cy, "Quick settings") + 4;
+                // ---- two columns of switches: icon, name, state; a small arrow on those with a panel
+                let (gap, th) = (8, 58);
+                let tw = (iw - gap) / 2;
+                let vol_text = match sys.volume {
+                    Some(v) if !v.muted => format!("{}%", v.percent),
+                    _ => "Muted".to_string(),
                 };
-                for (label, value, pct) in &rows {
-                    self.text.draw(&mut c, ix, cy + 10, label, self.pal.on_surface);
-                    self.text.draw(&mut c, ix + iw - self.text.width(value), cy + 10, value, accent);
-                    c.rounded_rect(ix, cy + 22, iw, 4, 2.0, with_alpha(accent, 0.22));
-                    let f = (iw as f32 * (*pct).min(100) as f32 / 100.0) as i32;
-                    if f > 0 {
-                        c.rounded_rect(ix, cy + 22, f.max(4), 4, 2.0, accent);
+                for (i, (tile, _short, on_glyph, off_glyph)) in crate::quick::TILES.iter().enumerate() {
+                    let (col, row) = (i as i32 % 2, i as i32 / 2);
+                    let (tx, ty) = (ix + col * (tw + gap), cy + row * (th + gap));
+                    let on = p.quick.get(*tile);
+                    let hot = hover == Some(PHit::Tile(*tile));
+                    let (title, state): (&str, String) = match tile {
+                        crate::quick::Tile::Wifi => ("Wi-Fi", if on { "On" } else { "Off" }.into()),
+                        crate::quick::Tile::Bluetooth => ("Bluetooth", if on { "On" } else { "Off" }.into()),
+                        crate::quick::Tile::Airplane => ("Airplane mode", if on { "On" } else { "Off" }.into()),
+                        crate::quick::Tile::NightLight => ("Night light", if on { "On" } else { "Off" }.into()),
+                        crate::quick::Tile::Sound => ("Sound", vol_text.clone()),
+                        crate::quick::Tile::Mic => ("Microphone", if on { "On" } else { "Muted" }.into()),
+                        crate::quick::Tile::Dnd => ("Do not disturb", if on { "On" } else { "Off" }.into()),
+                        crate::quick::Tile::KeepAwake => ("Keep awake", if on { "On" } else { "Off" }.into()),
+                    };
+                    let fill = if on { with_alpha(accent, if hot { 0.28 } else { 0.18 }) } else { with_alpha(self.pal.on_surface, if hot { 0.12 } else { 0.06 }) };
+                    c.rounded_rect(tx, ty, tw, th, 12.0, fill);
+                    c.rounded_outline(tx, ty, tw, th, 12.0, 1.0, if on { accent } else { line });
+                    self.text.resized(22.0).draw_centered(&mut c, tx + 28, ty + th / 2, if on { on_glyph } else { off_glyph }, if on { accent } else { self.pal.on_surface });
+                    self.text.resized(14.5).draw(&mut c, tx + 54, ty + 22, &self.text.resized(14.5).fit(title, tw - 54 - if side_for(*tile).is_some_and(|s| s != Side::Night) { 30 } else { 12 }), self.pal.on_surface);
+                    self.text.resized(12.0).draw(&mut c, tx + 54, ty + 41, &state, dim);
+                    if let Some(side) = side_for(*tile).filter(|s| *s != Side::Night) {
+                        let cr = (tx + tw - 34, ty, tx + tw, ty + th);
+                        if p.side == Some(side) || hover == Some(PHit::Open(side)) {
+                            c.rounded_rect(cr.0 + 6, cr.1 + th / 2 - 12, 24, 24, 12.0, with_alpha(self.pal.on_surface, 0.14));
+                        }
+                        self.text.resized(15.0).draw_centered(&mut c, cr.0 + 18, ty + th / 2, "\u{f0142}", self.pal.on_surface);
+                        p.hits.push((cr, PHit::Open(side)));
                     }
-                    cy += 34;
+                    p.hits.push(((tx, ty, tx + tw, ty + th), PHit::Tile(*tile)));
                 }
-                cy += 8;
-                let acts = [
-                    (StartAct::Lock, "Lock", "\u{f033e}"),
-                    (StartAct::Sleep, "Sleep", "\u{f0904}"),
-                    (StartAct::Logout, "Log out", "\u{f0343}"),
-                    (StartAct::Restart, "Restart", "\u{f0709}"),
-                    (StartAct::Shutdown, "Shut down", "\u{f0425}"),
-                ];
-                let n = acts.len() as i32;
-                let bw2 = (iw - (n - 1) * 6) / n;
-                for (i, (act, label, glyph)) in acts.into_iter().enumerate() {
-                    let bx = ix + i as i32 * (bw2 + 6);
-                    let r = (bx, cy, bx + bw2, cy + 58);
-                    let confirm = p.pending == Some(act);
+                cy += 4 * th + 3 * gap + 10;
+                // ---- three tools
+                let bw3 = (iw - 16) / 3;
+                for (i, (act, label, glyph)) in [(StartAct::Screenshot, "Screenshot", "\u{f0100}"), (StartAct::ReadQr, "Scan QR", "\u{f0432}"), (StartAct::CopyText, "Scan text", "\u{f113d}")].into_iter().enumerate() {
+                    let bx = ix + i as i32 * (bw3 + 8);
                     let hot = hover == Some(PHit::Start(act));
-                    let fill = if confirm { self.pal.error } else if hot { with_alpha(self.pal.on_surface, 0.16) } else { with_alpha(self.pal.on_surface, 0.08) };
-                    c.rounded_rect(r.0, r.1, r.2 - r.0, r.3 - r.1, 9.0, fill);
-                    let fg = if confirm { self.pal.on_primary } else { accent };
-                    self.text.draw_centered(&mut c, bx + bw2 / 2, cy + 20, glyph, fg);
-                    let small = self.text.resized(11.0);
-                    small.draw_centered(&mut c, bx + bw2 / 2, cy + 43, if confirm { "Sure?" } else { label }, if confirm { self.pal.on_primary } else { self.pal.on_surface });
-                    p.hits.push((r, PHit::Start(act)));
+                    c.rounded_rect(bx, cy, bw3, 56, 12.0, with_alpha(self.pal.on_surface, if hot { 0.12 } else { 0.06 }));
+                    c.rounded_outline(bx, cy, bw3, 56, 12.0, 1.0, line);
+                    self.text.resized(19.0).draw_centered(&mut c, bx + bw3 / 2, cy + 18, glyph, self.pal.on_surface);
+                    self.text.resized(12.5).draw_centered(&mut c, bx + bw3 / 2, cy + 40, label, self.pal.on_surface);
+                    p.hits.push(((bx, cy, bx + bw3, cy + 56), PHit::Start(act)));
                 }
+                cy += 56 + 14;
+                // ---- brightness and volume
+                let lit_b = p.side == Some(Side::Brightness);
+                cy += self.icon_slider(&mut c, ix, iw, cy, "\u{f00df}", sys.brightness.unwrap_or(0), 100, Slider::Brightness, Some(PHit::Open(Side::Brightness)), if lit_b { Some(PHit::Open(Side::Brightness)) } else { hover }, &mut p.hits);
+                let (vp, vm) = sys.volume.map_or((0, false), |v| (v.percent, v.muted));
+                let vmax = if self.volume_max > 100 { 150 } else { 100 }.max(vp.min(150));
+                cy += self.icon_slider(&mut c, ix, iw, cy, if vm { "\u{f0581}" } else { "\u{f057e}" }, vp, vmax, Slider::Volume, Some(PHit::Mute), hover, &mut p.hits);
+                cy += 8;
+                // ---- the battery
+                if let Some(b) = sys.battery {
+                    c.rounded_rect(ix, cy, iw, 58, 12.0, with_alpha(self.pal.on_surface, 0.06));
+                    c.rounded_outline(ix, cy, iw, 58, 12.0, 1.0, line);
+                    self.text.resized(22.0).draw_centered(&mut c, ix + 26, cy + 29, "\u{f0079}", self.pal.on_surface);
+                    self.text.resized(15.0).draw(&mut c, ix + 46, cy + 20, &format!("{}%", b.percent), self.pal.on_surface);
+                    let find = |k: &str| p.battery_rows.iter().find(|(l, _)| l == k).map(|(_, v)| v.clone());
+                    let status = find("Status").unwrap_or_default().to_lowercase();
+                    let sub = match find("Time left").or_else(|| find("Until full")) {
+                        Some(t) => format!("{status} \u{b7} {t}"),
+                        None => status,
+                    };
+                    self.text.resized(11.5).draw(&mut c, ix + 46, cy + 40, &self.text.resized(11.0).fit(&sub, iw - 46 - 190), dim);
+                    let n = p.profiles.len() as i32;
+                    if n > 0 {
+                        let pw3 = 54;
+                        let mut px = ix + iw - 10 - n * pw3 - (n - 1) * 6;
+                        for (i, name) in p.profiles.iter().enumerate() {
+                            let on = *name == p.profile;
+                            let r = (px, cy + 14, px + pw3, cy + 44);
+                            let hot = hover == Some(PHit::Profile(i));
+                            c.rounded_rect(r.0, r.1, pw3, 30, 9.0, if on { with_alpha(accent, 0.25) } else { with_alpha(self.pal.on_surface, if hot { 0.14 } else { 0.06 }) });
+                            c.rounded_outline(r.0, r.1, pw3, 30, 9.0, 1.0, if on { accent } else { line });
+                            let label = match name.as_str() {
+                                "power-saver" => "Saver",
+                                "balanced" => "Balanced",
+                                "performance" => "Perf",
+                                o => o,
+                            };
+                            self.text.resized(11.0).draw_centered(&mut c, px + pw3 / 2, cy + 29, label, self.pal.on_surface);
+                            p.hits.push((r, PHit::Profile(i)));
+                            px += pw3 + 6;
+                        }
+                    }
+                    cy += 58 + 10;
+                }
+                // ---- performance: two cards with a graph
+                cy += self.section_label(&mut c, ix, cy, "Performance") + 2;
+                let cw = (iw - 10) / 2;
+                let h = &sys.hist;
+                let gib = |kib: u64| kib as f64 / 1024.0 / 1024.0;
+                let cards: [(&str, String, u32, &Vec<u32>); 2] = [
+                    ("CPU", "load".to_string(), sys.stats.map_or(0, |s| s.cpu), &h.cpu),
+                    ("RAM", format!("{:.1} / {:.1} GiB", gib(h.mem_used_kib), gib(h.mem_total_kib)), sys.stats.map_or(0, |s| s.mem), &h.mem),
+                ];
+                for (i, (name, sub, pct, hist)) in cards.iter().enumerate() {
+                    let cx0 = ix + i as i32 * (cw + 10);
+                    c.rounded_rect(cx0, cy, cw, 84, 12.0, with_alpha(self.pal.on_surface, 0.06));
+                    c.rounded_outline(cx0, cy, cw, 84, 12.0, 1.0, line);
+                    self.text.resized(12.0).draw(&mut c, cx0 + 12, cy + 16, name, accent);
+                    self.text.resized(11.0).draw(&mut c, cx0 + 12, cy + 33, &self.text.resized(11.0).fit(sub, cw - 24 - 60), dim);
+                    let big = format!("{pct}%");
+                    let big_font = self.text.resized(22.0);
+                    big_font.draw(&mut c, cx0 + cw - 12 - big_font.width(&big), cy + 24, &big, accent);
+                    // the graph: the last samples as a filled area along the bottom of the card
+                    let (gx, gy, gw, gh) = (cx0 + 8, cy + 44, cw - 16, 32);
+                    let n = (gw / 3).max(2) as usize;
+                    let tail: Vec<u32> = hist.iter().rev().take(n).rev().copied().collect();
+                    for (k, v) in tail.iter().enumerate() {
+                        let x = gx + gw - (tail.len() - k) as i32 * 3;
+                        let bh = ((gh as f32) * (*v).min(100) as f32 / 100.0).round() as i32;
+                        if bh > 0 {
+                            c.fill_rect(x, gy + gh - bh, 3, bh, with_alpha(accent, 0.28));
+                            c.fill_rect(x, gy + gh - bh, 3, 2, accent);
+                        }
+                    }
+                }
+                cy += 84 + 12;
+                // ---- the power button
+                c.fill_rect(ix, cy, iw, 1, line);
+                cy += 10;
+                let pr = (ix + iw - 40, cy, ix + iw, cy + 38);
+                let hot = hover == Some(PHit::Start(StartAct::PowerMenu));
+                c.rounded_rect(pr.0, pr.1, 40, 38, 11.0, with_alpha(self.pal.on_surface, if hot { 0.14 } else { 0.06 }));
+                c.rounded_outline(pr.0, pr.1, 40, 38, 11.0, 1.0, line);
+                self.text.resized(18.0).draw_centered(&mut c, pr.0 + 20, cy + 19, "\u{f0425}", self.pal.on_surface);
+                p.hits.push((pr, PHit::Start(StartAct::PowerMenu)));
             }
             Kind::Calendar => {
                 let first = month_start(p.month_offset);
@@ -1030,46 +1432,35 @@ impl Renderer {
                     self.text.draw_centered(&mut c, cx, ry + 15, &day.to_string(), tc);
                 }
             }
-            Kind::Brightness => {
-                match sys.brightness {
-                    Some(b) => {
-                        self.slider_row(&mut c, ix, iw, cy, "Brightness", b, false, Slider::Brightness, &mut p.hits);
-                    }
-                    None => {
-                        self.text.draw(&mut c, ix, cy + 12, "Brightness", accent);
-                        self.text.draw(&mut c, ix, cy + 40, &self.text.fit("No adjustable screen backlight", iw), muted);
-                    }
-                }
-                // the same night-light controls as the start menu's brightness panel
-                self.draw_side_body(&mut c, p, Side::Brightness, x, y + 66, bw, hover, false);
-            }
-            Kind::Volume => {
-                let (percent, mutedv) = sys.volume.map_or((0, false), |v| (v.percent, v.muted));
-                self.slider_row(&mut c, ix, iw, cy, "Volume", percent, mutedv, Slider::Volume, &mut p.hits);
-                // the same mute, boost, outputs and per-app mixer as the start menu's volume panel
-                self.draw_side_body(&mut c, p, Side::Volume, x, y + 66, bw, hover, false);
-            }
+            Kind::Brightness => self.draw_side_body(&mut c, p, Side::Brightness, x, y, bw, hover, true),
+            Kind::Volume => self.draw_side_body(&mut c, p, Side::Volume, x, y, bw, hover, true),
             Kind::Battery => {
-                match sys.battery {
-                    Some(b) => {
-                        let big = self.text.resized(30.0);
-                        big.draw(&mut c, ix, cy + 22, &format!("{}%", b.percent), accent);
-                        let state = if b.charging { "Charging" } else { "On battery" };
-                        self.text.draw(&mut c, ix, cy + 52, state, self.pal.on_surface);
-                        cy += 64;
+                self.text.draw(&mut c, ix, cy + 8, "Battery", accent);
+                cy += 32;
+                // the charge: the percentage over a bar
+                let percent = sys.battery.map(|b| b.percent.min(100));
+                match percent {
+                    Some(pc) => {
+                        self.text.draw_centered(&mut c, ix + iw / 2, cy + 8, &format!("{pc}%"), accent);
+                        c.rounded_rect(ix, cy + 22, iw, 10, 5.0, with_alpha(self.pal.on_surface, 0.12));
+                        let fw = (iw * pc as i32 / 100).max(10);
+                        c.rounded_rect(ix, cy + 22, fw, 10, 5.0, accent);
                     }
-                    None => {
-                        self.text.draw(&mut c, ix, cy + 22, "No battery", accent);
-                        cy += 64;
-                    }
+                    None => self.text.draw(&mut c, ix, cy + 14, "No battery", muted),
                 }
-                if !p.battery_note.is_empty() {
-                    self.text.draw(&mut c, ix, cy + 8, &p.battery_note, muted);
+                cy += 46;
+                // label on the left, value in a second column
+                let col = ix + iw * 42 / 100;
+                for (label, value) in &p.battery_rows {
+                    self.text.draw(&mut c, ix, cy + 10, label, self.pal.on_surface);
+                    self.text.draw(&mut c, col, cy + 10, &self.text.fit(value, ix + iw - col), self.pal.on_surface);
+                    cy += 26;
                 }
-                cy += 28;
                 if !p.profiles.is_empty() {
+                    cy += 8;
                     self.text.draw(&mut c, ix, cy + 8, "Power mode", muted);
                     cy += 30;
+
                     let n = p.profiles.len() as i32;
                     let bw2 = (iw - (n - 1) * 6) / n;
                     for (i, name) in p.profiles.iter().enumerate() {
@@ -1127,8 +1518,9 @@ mod tests {
     fn write_sheet_if_asked() {
         let Some(path) = std::env::var_os("VESPER_POPUP_OUT") else { return };
         let mut r = Renderer::new("JetBrainsMono Nerd Font", 14.0, 32, 0);
-        let mut sys = Sys { plugin: Default::default(), mic: Some(true), kb: None, media: None, tray: Vec::new(), stats: Some(crate::sys::Stats { cpu: 37, mem: 58, temp: Some(52) }), brightness: Some(60), notif: Default::default(), volume: Some(Volume { percent: 62, muted: false }), net: crate::sys::Net::Wifi, battery: Some(Battery { percent: 64, charging: false }), drives: Vec::new() };
-        let (w, h) = (2100u32, 700u32);
+        let mut sys = Sys { plugin: Default::default(), mic: Some(true), kb: None, media: None, tray: Vec::new(), stats: Some(crate::sys::Stats { cpu: 37, mem: 58, temp: Some(52) }), brightness: Some(60), notif: Default::default(), volume: Some(Volume { percent: 62, muted: false }), net: crate::sys::Net::Wifi, battery: Some(Battery { percent: 64, charging: false }), drives: Vec::new(), hist: Default::default() };
+        let (w, h) = (2100u32, 880u32);
+        sys.hist = crate::sys::Hist { cpu: (0..60).map(|i| 20 + (i * 7 % 35)).collect(), mem: (0..60).map(|i| 45 + (i % 6)).collect(), mem_used_kib: 7_600_000, mem_total_kib: 16_000_000 };
         let mut sheet = vec![0u8; (w * h * 4) as usize];
         for (i, kind) in [Kind::Start, Kind::Brightness, Kind::Network].into_iter().enumerate() {
             let mut p = Popup::open(kind, 0, &sys);
@@ -1136,7 +1528,7 @@ mod tests {
             p.sinks = vec![Sink { name: "a".into(), label: "Built-in Audio Analog Stereo".into(), default: true }, Sink { name: "b".into(), label: "HDMI / DisplayPort".into(), default: false }];
             p.profiles = vec!["power-saver".into(), "balanced".into(), "performance".into()];
             p.profile = "balanced".into();
-            p.battery_note = "2h 14m left".into();
+            p.battery_rows = vec![("Status".into(), "Discharging".into()), ("Time left".into(), "2h 14m".into())];
             p.side = Some(Side::Bluetooth);
             crate::bt::set_state_for_test(crate::bt::State {
                 available: true,
@@ -1151,11 +1543,18 @@ mod tests {
             });
             p.nets = vec![Wifi { ssid: "Home".into(), signal: 82, secure: true, active: true }, Wifi { ssid: "Cafe".into(), signal: 40, secure: false, active: false }];
             if kind == Kind::Network {
-                p.prompt = Some(Prompt { ssid: "Home-5G".into(), text: "hunter2".into(), error: Some("Wrong password, or the network could not be joined".into()), busy: false });
+                if std::env::var("VESPER_POPUP_PROMPT").is_ok() { p.prompt = Some(Prompt { ssid: "Home-5G".into(), text: "hunter2".into(), error: Some("Wrong password, or the network could not be joined".into()), busy: false }); }
             }
-            let (pw, ph) = (700u32, 700u32);
+            let (pw, ph) = (700u32, 880u32);
             if kind == Kind::Start {
-                p.side = Some(Side::Volume);
+                p.side = match std::env::var("VESPER_POPUP_SIDE").as_deref() {
+                    Ok("mic") => Some(Side::Mic),
+                    Ok("none") => None,
+                    _ => Some(Side::Volume),
+                };
+                p.sources = vec![Sink { name: "m".into(), label: "Digital Microphone".into(), default: true }];
+                p.ptt_key = "F4".into();
+                p.vol = (60, false);
                 p.sinks = vec![Sink { name: "1".into(), label: "Built-in Audio Analog Stereo".into(), default: true }, Sink { name: "2".into(), label: "HDMI / DisplayPort".into(), default: false }];
             }
             let mut buf = vec![0u8; (pw * ph * 4) as usize];
@@ -1257,4 +1656,14 @@ mod stream_tests {
         let text = "Audio\n ├─ Sinks:\n │  *   55. Built-in Audio                   [vol: 0.40]\n │\n └─ Streams:\n        88. LibreWolf\n             92. output_FL       > Built-in Audio:playback_FL\t[active]\n             93. output_FR       > Built-in Audio:playback_FR\t[active]\n       101. Spotify\n            102. output_FL       > Built-in Audio:playback_FL\t[active]\n\nVideo\n └─ Streams:\n";
         assert_eq!(parse_wpctl_streams(text), vec![("88".to_string(), "LibreWolf".to_string()), ("101".to_string(), "Spotify".to_string())]);
     }
+}
+
+/// Ask NetworkManager to look for networks again (the list is read afterwards).
+pub fn rescan_wifi() {
+    let _ = crate::cmd::output(Command::new("nmcli").args(["device", "wifi", "rescan"]));
+}
+
+/// The networks in range, read now.
+pub fn read_wifi_now() -> Result<Vec<Wifi>, String> {
+    read_wifi()
 }

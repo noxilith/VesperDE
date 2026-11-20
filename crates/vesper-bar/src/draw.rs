@@ -208,9 +208,9 @@ impl Renderer {
     }
 
     /// Draw one split mark (line, dots or dashes) centred on `cx`.
-    fn split_mark(&self, c: &mut Canvas, cx: i32, mid: i32, color: Rgba) {
+    fn split_mark(&self, c: &mut Canvas, cx: i32, mid: i32, color: Rgba, pct: i32) {
         let st = &self.style;
-        let h = (st.bar_h * st.split_height / 100).max(6);
+        let h = (st.bar_h * st.split_height / 100 * pct / 100).max(6);
         let w = st.split_width;
         let x = cx - w / 2;
         match st.split_style {
@@ -476,12 +476,14 @@ impl Renderer {
             let cx = (x0 + x1) / 2;
             let hot = hover == Some(Hit::Gap(id));
             let mark_color = self.style.split_color.unwrap_or(with_alpha(self.pal.outline, 0.9));
-            if split && self.style.kind != Kind::Islands {
-                self.split_mark(c, cx, mid, if hot { self.pal.error } else { mark_color });
-            } else if hot {
-                self.split_mark(c, cx, mid, with_alpha(if split { self.pal.error } else { self.pal.primary }, 0.7));
+            // hovering shows a smaller mark in the accent colour, whether the bar is split here or not
+            if hot {
+                self.split_mark(c, cx, mid, self.pal.primary, 60);
+            } else if split && self.style.kind != Kind::Islands {
+                self.split_mark(c, cx, mid, mark_color, 100);
             }
-            hits.push((*x0, *x1, Hit::Gap(id)));
+            // a narrow strip in the middle of the gap, so a click aimed at an icon never splits the bar
+            hits.push(((cx - 3).max(*x0), (cx + 3).min(*x1), Hit::Gap(id)));
         }
         (hits, Extents { left_end, right_start, mid: mid_range, items })
     }
@@ -615,7 +617,8 @@ impl Style {
             (false, false) => "%-I:%M %p",
             (false, true) => "%-I:%M:%S %p",
         };
-        let fmt = if self.clock_date { format!("%a %d %b  {time}") } else { time.to_string() };
+        // the time, then (after a \u{1} the bar draws smaller and dimmer) the weekday and day
+        let fmt = if self.clock_date { format!("{time}\u{1}%a %d") } else { time.to_string() };
         now.format(&fmt).to_string()
     }
 
@@ -950,9 +953,22 @@ impl Renderer {
                 Some((x, right))
             }
             "clock" => {
-                let x = right - self.text.width(clock);
-                self.text.draw(c, x, mid, clock, self.pal.on_surface);
-                Some((x, right))
+                // the time in the normal size, the date after it smaller and dimmer
+                match clock.split_once('\u{1}') {
+                    Some((time, date)) => {
+                        let small = self.text.resized(self.text.size * 0.8);
+                        let dx = right - small.width(date);
+                        small.draw(c, dx, mid, date, self.pal.on_surface_variant);
+                        let x = dx - 8 - self.text.width(time);
+                        self.text.draw(c, x, mid, time, self.pal.on_surface);
+                        Some((x, right))
+                    }
+                    None => {
+                        let x = right - self.text.width(clock);
+                        self.text.draw(c, x, mid, clock, self.pal.on_surface);
+                        Some((x, right))
+                    }
+                }
             }
             "battery" => {
                 let Battery { percent, charging } = sys.battery?;
@@ -1090,6 +1106,7 @@ mod tests {
             net: Net::Wifi,
             battery: Some(Battery { percent: 64, charging: false }),
             drives: Vec::new(),
+            hist: Default::default(),
         };
         let h = r.style.surface_height() as u32;
         let mut px = vec![0u8; (w * h * 4) as usize];

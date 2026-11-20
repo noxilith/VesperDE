@@ -44,18 +44,16 @@ use smithay_client_toolkit::{
     shm::{slot::SlotPool, Shm, ShmHandler},
 };
 use vesper_apps::{Apps, Icons};
-use vesper_config::theme::{alpha, Palette};
+use vesper_config::theme::{alpha, with_alpha, Palette};
 use vesper_gfx::{Canvas, Image, Rgba, Text};
 
 const BTN_LEFT: u32 = 0x110;
-const WIDTH: i32 = 360;
 const CARD_H: i32 = 78;
 const ACT_H: i32 = 38;
 const CENTER_W: i32 = 400;
 const GAP: i32 = 8;
 const ICON: i32 = 40;
 const PAD: i32 = 14;
-const MAX_VISIBLE: usize = 5;
 
 const TILE_TEXT: Rgba = [0xff, 0xff, 0xff, 0xf0];
 
@@ -192,7 +190,7 @@ fn main() -> Result<()> {
         registry_state: RegistryState::new(&globals),
         seat_state: SeatState::new(&globals, &qh),
         output_state: OutputState::new(&globals, &qh),
-        pool: SlotPool::new(WIDTH as usize * 400 * 4, &shm)?,
+        pool: SlotPool::new(config.notifications.width.clamp(260, 640) as usize * 400 * 4, &shm)?,
         shm,
         compositor,
         layer_shell,
@@ -345,6 +343,26 @@ impl Notify {
         CARD_H + if c.n.actions.is_empty() { 0 } else { ACT_H }
     }
 
+    fn popup_width(&self) -> i32 {
+        self.config.notifications.width.clamp(260, 640) as i32
+    }
+
+    fn max_visible(&self) -> usize {
+        self.config.notifications.max_visible.clamp(1, 10)
+    }
+
+    /// Corner and margins (top, right, bottom, left) for the popups.
+    fn popup_placement(&self) -> (Anchor, (i32, i32, i32, i32)) {
+        let m = self.config.notifications.margin.min(200) as i32;
+        let top = self.top_margin.max(m);
+        match self.config.notifications.position.as_str() {
+            "top-left" => (Anchor::TOP | Anchor::LEFT, (top, 0, 0, m)),
+            "bottom-left" => (Anchor::BOTTOM | Anchor::LEFT, (0, 0, m, m)),
+            "bottom-right" => (Anchor::BOTTOM | Anchor::RIGHT, (0, m, m, 0)),
+            _ => (Anchor::TOP | Anchor::RIGHT, (top, m, 0, 0)),
+        }
+    }
+
     /// Top and height of each visible popup card.
     fn popup_rows(&self) -> Vec<(i32, i32)> {
         if self.center.is_some() {
@@ -353,7 +371,7 @@ impl Notify {
         let mut y = 0;
         self.cards
             .iter()
-            .take(MAX_VISIBLE)
+            .take(self.max_visible())
             .map(|c| {
                 let h = Self::card_height(c);
                 let row = (y, h);
@@ -373,14 +391,15 @@ impl Notify {
             self.hits.clear();
             return;
         };
-        let want = (WIDTH as u32, (last_y + last_h) as u32);
+        let want = (self.popup_width() as u32, (last_y + last_h) as u32);
         match &self.layer {
             None => {
                 let surface = self.compositor.create_surface(&self.qh);
                 let layer =
                     self.layer_shell.create_layer_surface(&self.qh, surface, Layer::Overlay, Some("vesper-notify"), None);
-                layer.set_anchor(Anchor::TOP | Anchor::RIGHT);
-                layer.set_margin(self.top_margin, 12, 0, 0);
+                let (anchor, margin) = self.popup_placement();
+                layer.set_anchor(anchor);
+                layer.set_margin(margin.0, margin.1, margin.2, margin.3);
                 layer.set_exclusive_zone(-1);
                 layer.set_keyboard_interactivity(KeyboardInteractivity::None);
                 layer.set_size(want.0, want.1);
@@ -404,6 +423,7 @@ impl Notify {
         }
         let (w, h) = self.size;
         let rows = self.popup_rows();
+        let max_visible = self.max_visible();
         let Ok((buffer, canvas)) =
             self.pool.create_buffer(w as i32, h as i32, w as i32 * 4, wl_shm::Format::Argb8888)
         else {
@@ -414,29 +434,32 @@ impl Notify {
         c.clear([0, 0, 0, 0]);
         let mut hits: Vec<(Rect, Hit)> = Vec::new();
 
-        for (card, &(y, ch)) in self.cards.iter().take(MAX_VISIBLE).zip(&rows) {
+        for (card, &(y, ch)) in self.cards.iter().take(max_visible).zip(&rows) {
             let (radius, fill_a, border_w, border) = Self::bar_look(&self.config, &self.pal);
-            c.rounded_rect(0, y, w as i32, ch, radius.min(ch as f32 / 2.0), alpha(self.pal.surface_container, fill_a));
+            // the same look as the start menu: a panel with the bar's border, and the icon in a tinted tile
+            c.rounded_rect(0, y, w as i32, ch, radius.min(ch as f32 / 2.0), alpha(self.pal.surface, fill_a));
             c.rounded_outline(0, y, w as i32, ch, radius.min(ch as f32 / 2.0), border_w, border);
             let accent = match card.n.urgency {
-                0 => self.pal.outline,
+                0 => self.pal.on_surface_variant,
                 1 => self.pal.primary,
                 _ => self.pal.error,
             };
-            c.rounded_rect(0, y + 14, 4, CARD_H - 28, 2.0, accent);
+            let tile_y = y + (CARD_H - ICON) / 2 - 6;
+            c.rounded_rect(PAD - 2, tile_y, ICON + 12, ICON + 12, 12.0, with_alpha(accent, 0.16));
+            c.rounded_outline(PAD - 2, tile_y, ICON + 12, ICON + 12, 12.0, 1.0, with_alpha(accent, 0.5));
             hits.push(((0, y, w as i32, CARD_H), Hit::Dismiss(card.n.id)));
 
-            let ix = PAD + 6;
-            let iy = y + (CARD_H - ICON) / 2;
+            let ix = PAD + 4;
+            let iy = tile_y + 6;
             draw_icon(&mut c, &self.text, card.icon.as_ref(), &card.n, ix, iy);
 
-            let tx = ix + ICON + 12;
+            let tx = ix + ICON + 16;
             let avail = w as i32 - tx - PAD;
             let summary = self.text.fit(&card.n.summary, avail);
-            self.text.draw(&mut c, tx, y + 24, &summary, self.pal.on_surface);
+            self.text.resized(15.0).draw(&mut c, tx, y + 24, &summary, self.pal.on_surface);
             let body = strip_markup(&card.n.body);
             for (line_no, line) in wrap(&self.small, &body, avail, 2).iter().enumerate() {
-                self.small.draw(&mut c, tx, y + 46 + line_no as i32 * 17, line, self.pal.on_surface_variant);
+                self.small.draw(&mut c, tx, y + 46 + line_no as i32 * 17, line, with_alpha(self.pal.on_surface, 0.62));
             }
 
             // buttons the sender asked for
@@ -446,14 +469,15 @@ impl Notify {
                 for (key, label) in card.n.actions.iter().take(4) {
                     let label = self.small.fit(label, 110);
                     let bw = self.small.width(&label) + 22;
-                    c.rounded_rect(x, by, bw, ACT_H - 8, 9.0, self.pal.primary_container);
-                    self.small.draw_centered(&mut c, x + bw / 2, by + (ACT_H - 8) / 2, &label, self.pal.on_primary_container);
+                    c.rounded_rect(x, by, bw, ACT_H - 8, 9.0, with_alpha(self.pal.primary, 0.2));
+                    c.rounded_outline(x, by, bw, ACT_H - 8, 9.0, 1.0, with_alpha(self.pal.primary, 0.6));
+                    self.small.draw_centered(&mut c, x + bw / 2, by + (ACT_H - 8) / 2, &label, self.pal.on_surface);
                     hits.push(((x, by, bw, ACT_H - 8), Hit::Action(card.n.id, key.clone())));
                     x += bw + 8;
                 }
             }
         }
-        if self.cards.len() > MAX_VISIBLE {
+        if self.cards.len() > max_visible {
             // a hint that more are waiting is enough; they show as the others go
             c.circle(w as i32 - 10, 8, 3, self.pal.primary);
         }
@@ -516,7 +540,7 @@ impl Notify {
         let mut hits: Vec<(Rect, Hit)> = Vec::new();
 
         // header
-        self.text.draw(&mut c, 20, 34, "Notifications", self.pal.on_surface);
+        self.text.resized(17.0).draw(&mut c, 20, 34, "Notifications", self.pal.on_surface);
         let close = (wi - 20 - 28, 14, 28, 28);
         c.circle(close.0 + 14, close.1 + 14, 14, self.pal.surface_container_high);
         self.text.draw_centered(&mut c, close.0 + 14, close.1 + 14, "✕", self.pal.on_surface_variant);
@@ -524,8 +548,9 @@ impl Notify {
 
         let chip = |c: &mut Canvas, x: i32, y: i32, label: &str, on: bool, pal: &Palette, small: &Text| -> (i32, i32, i32, i32) {
             let bw = small.width(label) + 24;
-            let (bg, fg) = if on { (pal.primary, pal.on_primary) } else { (pal.surface_container_high, pal.on_surface) };
+            let (bg, fg) = if on { (with_alpha(pal.primary, 0.22), pal.on_surface) } else { (with_alpha(pal.on_surface, 0.06), pal.on_surface) };
             c.rounded_rect(x, y, bw, 30, 15.0, bg);
+            c.rounded_outline(x, y, bw, 30, 15.0, 1.0, if on { pal.primary } else { with_alpha(pal.on_surface, 0.14) });
             small.draw_centered(c, x + bw / 2, y + 15, label, fg);
             (x, y, bw, 30)
         };
@@ -548,15 +573,18 @@ impl Notify {
             if y + item_h < top || y > hi {
                 continue;
             }
-            c.rounded_rect(16, y, wi - 32, item_h, 12.0, alpha(self.pal.surface_container, 0xf2));
+            c.rounded_rect(16, y, wi - 32, item_h, 12.0, with_alpha(self.pal.on_surface, 0.06));
+            c.rounded_outline(16, y, wi - 32, item_h, 12.0, 1.0, with_alpha(self.pal.on_surface, 0.12));
             let accent = match past.n.urgency {
-                0 => self.pal.outline,
+                0 => self.pal.on_surface_variant,
                 1 => self.pal.primary,
                 _ => self.pal.error,
             };
-            c.rounded_rect(16, y + 14, 3, item_h - 28, 1.5, accent);
-            draw_icon(&mut c, &self.text, None, &past.n, 30, y + (item_h - ICON) / 2);
-            let tx = 30 + ICON + 12;
+            let ty = y + (item_h - ICON) / 2 - 6;
+            c.rounded_rect(24, ty, ICON + 12, ICON + 12, 12.0, with_alpha(accent, 0.16));
+            c.rounded_outline(24, ty, ICON + 12, ICON + 12, 12.0, 1.0, with_alpha(accent, 0.5));
+            draw_icon(&mut c, &self.text, None, &past.n, 30, ty + 6);
+            let tx = 30 + ICON + 20;
             let avail = wi - tx - 24;
             let when = ago(past.at.elapsed().as_secs());
             let wwidth = self.small.width(&when);
@@ -565,7 +593,7 @@ impl Notify {
             self.small.draw(&mut c, wi - 24 - wwidth, y + 26, &when, self.pal.on_surface_variant);
             let body = strip_markup(&past.n.body);
             for (n, line) in wrap(&self.small, &body, avail, 2).iter().enumerate() {
-                self.small.draw(&mut c, tx, y + 48 + n as i32 * 16, line, self.pal.on_surface_variant);
+                self.small.draw(&mut c, tx, y + 48 + n as i32 * 16, line, with_alpha(self.pal.on_surface, 0.62));
             }
             hits.push(((16, y.max(top), wi - 32, item_h), Hit::Forget(past.key)));
         }

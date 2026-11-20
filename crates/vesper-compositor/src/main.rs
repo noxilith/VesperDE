@@ -161,6 +161,7 @@ fn main() -> Result<()> {
         });
     }
 
+    state.plugins_sync(); // first, so replaced programs start as the plugin wants
     for (name, enabled) in [
         ("vesper-wallpaper", state.config.shell.wallpaper && !greeter),
         ("vesper-bar", state.config.shell.bar && !greeter),
@@ -170,16 +171,14 @@ fn main() -> Result<()> {
         if !enabled {
             continue;
         }
-        // Prefer the binary built next to this one (dev builds, relocatable installs), else PATH.
-        let sibling = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join(name)));
-        let bin = sibling.filter(|p| p.is_file()).map(|p| p.into_os_string()).unwrap_or_else(|| name.into());
-        match std::process::Command::new(&bin).spawn() {
+        // a plugin's replacement if there is one, else the binary built next to this one (dev builds, relocatable installs), else PATH
+        match Vesper::component_command(name, &[]).spawn() {
             Ok(mut child) => {
                 std::thread::spawn(move || {
                     let _ = child.wait();
                 });
             }
-            Err(err) => tracing::warn!("could not start {name} ({}): {err}", bin.to_string_lossy()),
+            Err(err) => tracing::warn!("could not start {name}: {err}"),
         }
     }
 

@@ -31,7 +31,7 @@ pub struct Item {
 /// Every bar widget of the enabled plugins.
 pub fn load(enabled: &[String]) -> Vec<Item> {
     let mut out = Vec::new();
-    for p in plugins::active(enabled) {
+    for p in plugins::active(enabled).into_iter().filter(|p| p.can("bar")) {
         for b in &p.manifest.bar_item {
             out.push(Item {
                 id: vesper_config::intern(&plugins::item_id(&p.id, &b.id)),

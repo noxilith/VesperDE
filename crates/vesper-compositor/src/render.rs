@@ -166,18 +166,18 @@ pub fn output_elements(
     }
     let mut bg: Vec<Element> = Vec::new();
     layer_elements(renderer, output, &[Layer::Bottom, Layer::Background], &mut bg);
-    if let (Some((state, params)), Some(mode)) = (blur, output.current_mode()) {
-        let els = state.elements(renderer, &bg, mode.size, scale, params, style);
+    if let (Some((state, params)), Some(mode)) = (blur, crate::outputs::upright_size(output)) {
+        let els = state.elements(renderer, &bg, mode, scale, params, style);
         elements.extend(els);
     }
     elements.extend(bg);
     // night light: a warm veil over everything, topmost
     let alpha = NIGHT_ALPHA.load(std::sync::atomic::Ordering::Relaxed);
     if alpha > 0 {
-        if let Some(mode) = output.current_mode() {
+        if let Some(mode) = crate::outputs::upright_size(output) {
             let a = alpha as f32 / 255.0;
             let color = [1.0 * a, 0.55 * a, 0.15 * a, a];
-            let size: Size<i32, Logical> = ((mode.size.w as f64 / scale.x).ceil() as i32, (mode.size.h as f64 / scale.y).ceil() as i32).into();
+            let size: Size<i32, Logical> = ((mode.w as f64 / scale.x).ceil() as i32, (mode.h as f64 / scale.y).ceil() as i32).into();
             NIGHT.with(|n| {
                 let mut n = n.borrow_mut();
                 match n.as_mut() {

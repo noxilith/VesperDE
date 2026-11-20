@@ -29,7 +29,9 @@ impl WlrLayerShellHandler for Vesper {
         _layer: Layer,
         namespace: String,
     ) {
-        let Some(output) = output.as_ref().and_then(Output::from_resource).or_else(|| self.output().cloned()) else {
+        // a namespace like `vesper-bar@HDMI-A-1` asks for that monitor by name (for clients that cannot look the output up)
+        let named = namespace.split_once('@').and_then(|(_, name)| self.space.outputs().find(|o| o.name() == name).cloned());
+        let Some(output) = output.as_ref().and_then(Output::from_resource).or(named).or_else(|| self.output().cloned()) else {
             surface.send_close();
             return;
         };

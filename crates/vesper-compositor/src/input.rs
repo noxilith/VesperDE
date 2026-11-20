@@ -59,6 +59,8 @@ pub enum Action {
     Lock,
     Wallpapers,
     ToggleFloating,
+    /// Float or tile just the focused window.
+    ToggleFloatingWindow,
     Files,
     Settings,
     ConsumeLeft,
@@ -75,6 +77,8 @@ pub enum Action {
     PowerKey,
     Media(Media),
     Capture(Cap),
+    /// A shortcut a plugin added: (index into `plugins.active`, index of its `[[key]]`).
+    PluginKey(usize, usize),
     /// Key was consumed (e.g. a release for a consumed press).
     None,
 }
@@ -102,6 +106,11 @@ impl Vesper {
             InputEvent::Keyboard { event } => self.on_keyboard::<I>(event),
             InputEvent::PointerMotion { event } => {
                 let pointer = self.seat.get_pointer().unwrap();
+                // holding Mod+Alt: the pointer stays where it is and the floating windows follow the motion (an endless desktop)
+                if self.drag.is_none() && self.canvas_pan_held() {
+                    self.pan_floating(event.delta());
+                    return;
+                }
                 let pos = self.clamp_to_outputs(pointer.current_location() + event.delta());
                 if self.drag.is_some() {
                     self.drag_to(pos, event.time_msec());
@@ -213,7 +222,8 @@ impl Vesper {
             if state.switcher_running() && matches!(lower(handle.modified_sym().raw()), keysyms::KEY_Tab | keysyms::KEY_ISO_Left_Tab) {
                 return FilterResult::Forward;
             }
-            match state.binding(mods, lower(handle.modified_sym().raw())) {
+            let syms: Vec<u32> = std::iter::once(handle.modified_sym()).chain(handle.raw_syms().iter().copied()).map(|k| lower(k.raw())).collect();
+            match state.binding(mods, &syms) {
                 Some(action) => {
                     state.suppressed_keys.push(raw);
                     FilterResult::Intercept(action)
@@ -227,7 +237,9 @@ impl Vesper {
         }
     }
 
-    fn binding(&self, mods: &ModifiersState, sym: u32) -> Option<Action> {
+    /// `syms`: the key as typed (Shift applied) first, then the key without modifiers.
+    fn binding(&self, mods: &ModifiersState, syms: &[u32]) -> Option<Action> {
+        let sym = syms[0];
         // Volume, brightness and media keys work with or without a modifier.
         let media = match sym {
             keysyms::KEY_XF86AudioRaiseVolume => Some(Media::VolumeUp),
@@ -251,14 +263,11 @@ impl Vesper {
         if self.locked() || self.greeter {
             return None; // nothing else works while the screen is locked, or at the login screen
         }
-        if sym == keysyms::KEY_l && mods.ctrl && mods.alt {
-            return Some(Action::Lock);
-        }
         if sym == keysyms::KEY_XF86PowerOff {
             return Some(Action::PowerKey);
         }
-        if sym == keysyms::KEY_Print {
-            return Some(Action::Capture(if mods.shift { Cap::Region } else if mods.alt { Cap::Window } else { Cap::Screen }));
+        if let Some(a) = self.user_binding(mods, syms) {
+            return Some(a);
         }
         let modifier = if self.uses_super() { mods.logo } else { mods.alt };
         if !modifier || mods.ctrl {
@@ -266,56 +275,21 @@ impl Vesper {
         }
         let shift = mods.shift;
         let a = match sym {
-            keysyms::KEY_Return => Action::Spawn,
-            keysyms::KEY_q if !shift => Action::CloseWindow,
-            keysyms::KEY_r => Action::CycleWidth,
-            keysyms::KEY_f => Action::ToggleFullscreen,
-            keysyms::KEY_m if shift => Action::RestoreLast,
-            keysyms::KEY_v if !shift => Action::ToggleFloating,
-            keysyms::KEY_e if !shift => Action::Files,
-            keysyms::KEY_space if !shift => Action::Launcher,
-            keysyms::KEY_Tab => Action::Switcher,
-            keysyms::KEY_v if shift => Action::Clipboard,
-            keysyms::KEY_period if !shift => Action::Emoji,
-            keysyms::KEY_ISO_Left_Tab => Action::Switcher,
             k @ (keysyms::KEY_1..=keysyms::KEY_9) if !shift => Action::WorkspaceTo((k - keysyms::KEY_1) as usize),
             keysyms::KEY_0 if !shift => Action::WorkspaceTo(9),
             k @ (keysyms::KEY_exclam | keysyms::KEY_at | keysyms::KEY_numbersign | keysyms::KEY_dollar | keysyms::KEY_percent | keysyms::KEY_asciicircum | keysyms::KEY_ampersand | keysyms::KEY_asterisk | keysyms::KEY_parenleft | keysyms::KEY_parenright) => {
                 let order = [keysyms::KEY_exclam, keysyms::KEY_at, keysyms::KEY_numbersign, keysyms::KEY_dollar, keysyms::KEY_percent, keysyms::KEY_asciicircum, keysyms::KEY_ampersand, keysyms::KEY_asterisk, keysyms::KEY_parenleft, keysyms::KEY_parenright];
                 Action::MoveToWorkspaceTo(order.iter().position(|s| *s == k).unwrap_or(0))
             }
-            keysyms::KEY_comma => Action::Settings,
-            keysyms::KEY_bracketleft => Action::ConsumeLeft,
-            keysyms::KEY_bracketright => Action::Expel,
-            keysyms::KEY_Up if mods.alt => Action::FocusInColumn(-1),
-            keysyms::KEY_Down if mods.alt => Action::FocusInColumn(1),
-            keysyms::KEY_n => Action::Notifications,
-            keysyms::KEY_b => Action::ToggleBlur,
-            keysyms::KEY_p if shift => Action::PowerMenu,
-            keysyms::KEY_Escape if !shift => Action::StartMenu,
-            keysyms::KEY_l if !shift => Action::Lock,
-            keysyms::KEY_w if !shift => Action::Wallpapers,
-            keysyms::KEY_s if shift => Action::Capture(Cap::Region),
-            keysyms::KEY_m => Action::Minimize,
-            keysyms::KEY_minus => Action::AdjustWidth(-0.05),
-            keysyms::KEY_equal => Action::AdjustWidth(0.05),
-            keysyms::KEY_e if shift => Action::Quit,
-            keysyms::KEY_Left | keysyms::KEY_h if shift => Action::MoveColumn(-1),
-            keysyms::KEY_Right | keysyms::KEY_l if shift => Action::MoveColumn(1),
-            keysyms::KEY_Left | keysyms::KEY_h => Action::FocusColumn(-1),
-            keysyms::KEY_Right => Action::FocusColumn(1),
-            keysyms::KEY_Up | keysyms::KEY_k if shift => Action::MoveToWorkspace(-1),
-            keysyms::KEY_Down | keysyms::KEY_j if shift => Action::MoveToWorkspace(1),
-            keysyms::KEY_Up | keysyms::KEY_k => Action::Workspace(-1),
-            keysyms::KEY_Down | keysyms::KEY_j => Action::Workspace(1),
             _ => return None,
         };
         Some(a)
     }
 
-    fn run_action(&mut self, action: Action) {
+    pub(crate) fn run_action(&mut self, action: Action) {
         match action {
             Action::None => {}
+            Action::PluginKey(p, k) => self.run_plugin_key(p, k),
             Action::Spawn => {
                 match self.config.terminal_command() {
                     Some(cmd) => self.spawn(&cmd),
@@ -465,7 +439,8 @@ impl Vesper {
                 _ => self.toggle_power_menu(),
             },
             Action::Files => self.open_files(),
-            Action::ToggleFloating => {
+            Action::ToggleFloating => self.toggle_float_workspace(),
+            Action::ToggleFloatingWindow => {
                 let rect = self.default_float_rect();
                 self.layout.toggle_floating(rect);
                 self.layout_changed();
@@ -606,6 +581,55 @@ impl Vesper {
     }
 
     /// Where a window floats when you first float it: centred, about 60% of the screen.
+    /// Is the pan chord down: Mod+Alt (Mod+Ctrl when Alt is the shortcut key)?
+    fn canvas_pan_held(&self) -> bool {
+        if self.locked() || self.greeter {
+            return false;
+        }
+        let Some(kb) = self.seat.get_keyboard() else { return false };
+        let m = kb.modifier_state();
+        if self.uses_super() { m.logo && m.alt && !m.ctrl && !m.shift } else { m.alt && m.ctrl && !m.logo && !m.shift }
+    }
+
+    /// Move every floating window of the active workspace by `delta` (they may leave the screen).
+    fn pan_floating(&mut self, delta: smithay::utils::Point<f64, smithay::utils::Logical>) {
+        self.pan_frac.0 += delta.x;
+        self.pan_frac.1 += delta.y;
+        let (dx, dy) = (self.pan_frac.0.trunc() as i32, self.pan_frac.1.trunc() as i32);
+        if dx == 0 && dy == 0 {
+            return;
+        }
+        self.pan_frac.0 -= dx as f64;
+        self.pan_frac.1 -= dy as f64;
+        let ws = self.layout.ws_mut();
+        if ws.floating.is_empty() {
+            return;
+        }
+        for (_, rect) in ws.floating.iter_mut() {
+            rect.loc = (rect.loc.x + dx, rect.loc.y + dy).into();
+        }
+        self.relayout();
+    }
+
+    /// Mod+V: turn the active workspace into a floating one, or back. On: every window floats at the default floating size,
+    /// cascaded so they visibly overlap (the focused one on top); windows that open here float too. Off: they tile again.
+    pub fn toggle_float_workspace(&mut self) {
+        let n = self.layout.ws().columns.len();
+        let rects: Vec<_> = (0..n).map(|i| self.cascaded_float_rect(i)).collect();
+        let on = self.layout.toggle_float_workspace(|_, i| rects[i]);
+        tracing::info!("floating workspace {}", if on { "on" } else { "off" });
+        self.layout_changed();
+        self.dump_scene("floating workspace toggled");
+    }
+
+    /// The default floating rectangle, moved down and right a little for each window already floating (`n`).
+    pub fn cascaded_float_rect(&self, n: usize) -> smithay::utils::Rectangle<i32, smithay::utils::Logical> {
+        let mut r = self.default_float_rect();
+        let step = (n % 6) as i32 * 32;
+        r.loc = (r.loc.x + step - 80, r.loc.y + step - 80).into();
+        r
+    }
+
     pub fn default_float_rect(&self) -> smithay::utils::Rectangle<i32, smithay::utils::Logical> {
         let geo = self.output_geometry().unwrap_or_else(|| smithay::utils::Rectangle::from_size((1280, 720).into()));
         let (w, h) = (geo.size.w * 6 / 10, geo.size.h * 65 / 100);
@@ -768,6 +792,106 @@ impl Vesper {
             self.run_action(Action::Workspace(if dy < 0.0 { 1 } else { -1 }));
         } else if dx.abs() >= MIN {
             self.run_action(Action::FocusColumn(if dx < 0.0 { 1 } else { -1 }));
+        }
+    }
+}
+
+/// What a rebindable shortcut (`vesper_config::keys::BINDS`) does.
+pub fn action_for(id: &str) -> Option<Action> {
+    Some(match id {
+        "terminal" => Action::Spawn,
+        "launcher" => Action::Launcher,
+        "files" => Action::Files,
+        "settings" => Action::Settings,
+        "blur" => Action::ToggleBlur,
+        "wallpapers" => Action::Wallpapers,
+        "notifications" => Action::Notifications,
+        "power_menu" => Action::PowerMenu,
+        "close" => Action::CloseWindow,
+        "focus_left" => Action::FocusColumn(-1),
+        "focus_right" => Action::FocusColumn(1),
+        "workspace_up" => Action::Workspace(-1),
+        "workspace_down" => Action::Workspace(1),
+        "move_left" => Action::MoveColumn(-1),
+        "move_right" => Action::MoveColumn(1),
+        "send_up" => Action::MoveToWorkspace(-1),
+        "send_down" => Action::MoveToWorkspace(1),
+        "stack" => Action::ConsumeLeft,
+        "unstack" => Action::Expel,
+        "column_up" => Action::FocusInColumn(-1),
+        "column_down" => Action::FocusInColumn(1),
+        "cycle_width" => Action::CycleWidth,
+        "narrower" => Action::AdjustWidth(-0.05),
+        "wider" => Action::AdjustWidth(0.05),
+        "fullscreen" => Action::ToggleFullscreen,
+        "float" => Action::ToggleFloating,
+        "float_window" => Action::ToggleFloatingWindow,
+        "minimize" => Action::Minimize,
+        "restore" => Action::RestoreLast,
+        "lock" => Action::Lock,
+        "start_menu" => Action::StartMenu,
+        "switcher" => Action::Switcher,
+        "clipboard" => Action::Clipboard,
+        "emoji" => Action::Emoji,
+        "shot_screen" => Action::Capture(Cap::Screen),
+        "shot_window" => Action::Capture(Cap::Window),
+        "shot_region" => Action::Capture(Cap::Region),
+        "quit" => Action::Quit,
+        _ => return None,
+    })
+}
+
+/// The keysym a key name stands for, lowercased: a single character is itself, anything else is looked up by xkb name.
+fn key_sym(name: &str) -> Option<u32> {
+    let mut chars = name.chars();
+    if let (Some(c), None) = (chars.next(), chars.next()) {
+        if c.is_ascii() && !c.is_ascii_control() {
+            return Some(lower(c as u32));
+        }
+    }
+    let sym = smithay::input::keyboard::xkb::keysym_from_name(name, smithay::input::keyboard::xkb::KEYSYM_CASE_INSENSITIVE).raw();
+    (sym != 0).then(|| lower(sym))
+}
+
+impl Vesper {
+    /// The first rebindable shortcut whose keys are down (exact modifiers).
+    fn user_binding(&self, mods: &ModifiersState, syms: &[u32]) -> Option<Action> {
+        let sup = self.uses_super();
+        for bind in vesper_config::keys::BINDS {
+            for c in vesper_config::keys::effective(bind.id, &self.config.keys) {
+                let (logo, alt) = (c.logo || (c.modk && sup), c.alt || (c.modk && !sup));
+                if mods.logo != logo || mods.alt != alt || mods.ctrl != c.ctrl || mods.shift != c.shift {
+                    continue;
+                }
+                if key_sym(&c.key).is_some_and(|k| syms.contains(&k)) {
+                    return action_for(bind.id);
+                }
+            }
+        }
+        for (pi, p) in self.plugins.active.iter().enumerate().filter(|(_, p)| p.can("keys")) {
+            for (ki, k) in p.manifest.key.iter().enumerate() {
+                let id = vesper_config::plugins::key_id(&p.id, &k.id);
+                let mine = self.config.keys.get(&id).map(|s| vesper_config::keys::parse_list(s)).unwrap_or_default();
+                let combos = if mine.is_empty() { vesper_config::keys::parse_list(&k.default) } else { mine };
+                for c in combos {
+                    let (logo, alt) = (c.logo || (c.modk && sup), c.alt || (c.modk && !sup));
+                    if mods.logo == logo && mods.alt == alt && mods.ctrl == c.ctrl && mods.shift == c.shift && key_sym(&c.key).is_some_and(|s| syms.contains(&s)) {
+                        return Some(Action::PluginKey(pi, ki));
+                    }
+                }
+            }
+        }
+        None
+    }
+}
+
+impl Vesper {
+    /// A new window opens on the active workspace: in a column, or floating if the workspace is in floating mode.
+    pub fn add_window_here(&mut self, window: smithay::desktop::Window) {
+        self.layout.add_window(window.clone());
+        if self.layout.ws().float_mode {
+            let rect = self.cascaded_float_rect(self.layout.ws().floating.len());
+            self.layout.float_by_mode(&window, rect);
         }
     }
 }

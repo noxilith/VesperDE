@@ -134,6 +134,8 @@ pub struct Vesper {
     pub drag: Option<Drag>,
     /// Resizing re-tiles every window, so it runs at most about 80 times a second; the last position is applied on release.
     pub last_drag_layout: Instant,
+    /// Sub-pixel remainder of the Mod+Alt canvas pan.
+    pub pan_frac: (f64, f64),
     pub drag_force: bool,
     /// The strip offset (alignment) used by the last layout.
     pub last_shift: i32,
@@ -304,6 +306,7 @@ impl Vesper {
             settings: None,
             drag: None,
             last_drag_layout: Instant::now(),
+            pan_frac: (0.0, 0.0),
             drag_force: false,
             last_shift: 0,
             drop_hint: None,
@@ -574,9 +577,7 @@ impl Vesper {
     /// Start a Vesper component (`vesper-bar`, `vesper-launcher`, ...), preferring the copy next to this binary.
     /// Run a Vesper component with arguments and reap it.
     pub fn run_component(name: &str, args: &[&str]) {
-        let sibling = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join(name)));
-        let bin = sibling.filter(|p| p.is_file()).map(|p| p.into_os_string()).unwrap_or_else(|| name.into());
-        match std::process::Command::new(bin).args(args).spawn() {
+        match Self::component_command(name, args).spawn() {
             Ok(mut c) => {
                 std::thread::spawn(move || {
                     let _ = c.wait();
@@ -591,9 +592,28 @@ impl Vesper {
     }
 
     pub fn spawn_component_args(name: &str, args: &[&str]) -> std::io::Result<std::process::Child> {
+        Self::component_command(name, args).spawn()
+    }
+
+    /// The command that starts the desktop program `name` (`vesper-bar`, `vesper-launcher` ...): the copy a plugin replaces it with
+    /// if one does (run in the plugin's folder), else the one next to this binary, else the one in PATH.
+    pub fn component_command(name: &str, args: &[&str]) -> std::process::Command {
+        let replaced = REPLACED.lock().ok().and_then(|r| r.iter().find(|(n, _, _, _)| n == name).cloned());
+        if let Some((_, dir, command, id)) = replaced {
+            let mut cmd = std::process::Command::new("sh");
+            cmd.arg("-c")
+                .arg(format!("{} \"$@\"", vesper_config::plugins::shell_in(&dir, &format!("exec {command}"))))
+                .arg(name)
+                .args(args)
+                .env("VESPER_PLUGIN_ID", id)
+                .env("VESPER_PLUGIN_DIR", dir);
+            return cmd;
+        }
         let sibling = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join(name)));
         let bin = sibling.filter(|p| p.is_file()).map(|p| p.into_os_string()).unwrap_or_else(|| name.into());
-        std::process::Command::new(bin).args(args).spawn()
+        let mut cmd = std::process::Command::new(bin);
+        cmd.args(args);
+        cmd
     }
 
     /// Start `name`, or close it if the copy in `slot` is still running.
@@ -843,6 +863,16 @@ impl Vesper {
 }
 
 /// Wait for a child in a background thread so it never lingers as a zombie.
+/// Programs that enabled plugins replace: (program name, plugin folder, command, plugin id). Set by `plugins_sync`.
+static REPLACED: std::sync::Mutex<Vec<(String, std::path::PathBuf, String, String)>> = std::sync::Mutex::new(Vec::new());
+
+/// Remember which programs plugins replace (called whenever the plugins are looked at again).
+pub fn set_replacements(list: Vec<(String, std::path::PathBuf, String, String)>) {
+    if let Ok(mut r) = REPLACED.lock() {
+        *r = list;
+    }
+}
+
 pub fn reap(mut child: std::process::Child) {
     std::thread::spawn(move || {
         let _ = child.wait();
@@ -874,6 +904,13 @@ impl Vesper {
         }
         let wins = self.space.elements().count();
         out += &format!("\n  windows mapped={wins} workspace={} focus={:?}", self.layout.active, self.layout.focused_window().map(|w| crate::effects::app_id(w)));
+        for w in self.space.elements() {
+            let g = self.space.element_geometry(w).map(|g| (g.loc.x, g.loc.y, g.size.w, g.size.h));
+            out += &format!("\n    window {:?} {} geo={:?}", crate::effects::app_id(w), if self.layout.is_floating(w) { "floating" } else { "tiled" }, g);
+        }
+        for (i, ws) in self.layout.workspaces.iter().enumerate().filter(|(i, ws)| *i == self.layout.active || !ws.is_empty()) {
+            out += &format!("\n  workspace {i}: float_mode={} columns={} floating={} forced={}", ws.float_mode, ws.columns.len(), ws.floating.len(), ws.float_forced.len());
+        }
         tracing::info!("{out}");
     }
 }

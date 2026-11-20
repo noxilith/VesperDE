@@ -32,6 +32,15 @@ pub struct Stats {
     pub temp: Option<u32>,
 }
 
+/// Recent CPU and memory use (percent, oldest first) for the start menu graphs, and the memory in KiB.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Hist {
+    pub cpu: Vec<u32>,
+    pub mem: Vec<u32>,
+    pub mem_used_kib: u64,
+    pub mem_total_kib: u64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Notif {
     pub unread: u32,
@@ -56,6 +65,7 @@ pub struct Sys {
     pub battery: Option<Battery>,
     /// Removable drives that are plugged in.
     pub drives: Vec<crate::drives::Drive>,
+    pub hist: Hist,
 }
 
 pub struct Poller {
@@ -72,7 +82,7 @@ pub struct Poller {
 
 impl Poller {
     pub fn new() -> Self {
-        Self { sys: Sys { plugin: Default::default(), mic: None, kb: None, media: None, tray: Vec::new(), stats: None, brightness: None, notif: Notif::default(), volume: None, net: Net::Offline, battery: None, drives: Vec::new() }, last_drives: None, last_slow: None, volume_events: false, want_stats: false, last_mic: None, cpu_prev: None }
+        Self { sys: Sys { plugin: Default::default(), mic: None, kb: None, media: None, tray: Vec::new(), stats: None, brightness: None, notif: Notif::default(), volume: None, net: Net::Offline, battery: None, drives: Vec::new(), hist: Default::default() }, last_drives: None, last_slow: None, volume_events: false, want_stats: false, last_mic: None, cpu_prev: None }
     }
 
     /// Refresh everything that is due. Returns true if anything changed. Volume every call (about 1s),
@@ -81,6 +91,20 @@ impl Poller {
         let before = self.sys.clone();
         self.sys.notif = read_notif();
         self.sys.stats = if self.want_stats { self.read_stats() } else { None };
+        if let Some(s) = self.sys.stats {
+            let h = &mut self.sys.hist;
+            h.cpu.push(s.cpu);
+            h.mem.push(s.mem);
+            if h.cpu.len() > 60 {
+                h.cpu.remove(0);
+                h.mem.remove(0);
+            }
+            if let Ok(m) = fs::read_to_string("/proc/meminfo") {
+                let get = |k: &str| -> u64 { m.lines().find(|l| l.starts_with(k)).and_then(|l| l.split_whitespace().nth(1)).and_then(|n| n.parse().ok()).unwrap_or(0) };
+                h.mem_total_kib = get("MemTotal:");
+                h.mem_used_kib = h.mem_total_kib.saturating_sub(get("MemAvailable:"));
+            }
+        }
         if !self.volume_events || self.sys.volume.is_none() {
             self.sys.volume = read_volume();
         }

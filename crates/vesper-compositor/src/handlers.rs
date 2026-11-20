@@ -211,7 +211,7 @@ impl XdgShellHandler for Vesper {
     fn new_toplevel(&mut self, surface: ToplevelSurface) {
         tracing::info!("new toplevel");
         let window = smithay::desktop::Window::new_wayland_window(surface);
-        self.layout.add_window(window);
+        self.add_window_here(window);
         self.layout_changed();
         self.dump_scene("new toplevel");
     }

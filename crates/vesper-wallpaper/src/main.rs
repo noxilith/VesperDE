@@ -45,24 +45,36 @@ enum Source {
 
 /// A finished render, sent back to the main loop.
 struct Done {
+    head: usize,
     generation: u64,
     size: (u32, u32),
     /// BGRX pixels, `size.0 * size.1 * 4` bytes.
     pixels: Vec<u8>,
 }
 
+/// One monitor's wallpaper surface.
+struct Head {
+    id: usize,
+    output: wl_output::WlOutput,
+    layer: LayerSurface,
+    pool: SlotPool,
+    size: (u32, u32),
+    /// Bumped for every render request; results from older requests are dropped.
+    generation: u64,
+}
+
 struct Wallpaper {
     registry_state: RegistryState,
     output_state: OutputState,
     shm: Shm,
-    pool: SlotPool,
-    layer: LayerSurface,
+    compositor: CompositorState,
+    layer_shell: LayerShell,
+    qh: QueueHandle<Wallpaper>,
+    /// Every monitor gets the wallpaper.
+    heads: Vec<Head>,
+    next_head: usize,
     /// The file on screen. We do not keep the decoded picture (it is 16 MB or more); a resize decodes it again.
     current_path: Option<String>,
-    /// What to load on the first configure (the saved choice, or the config's path).
-    initial_path: Option<String>,
-    /// Bumped for every render request; results from older requests are dropped.
-    generation: u64,
     tx: channel::Sender<Done>,
     mode: String,
     color: [u8; 3],
@@ -70,7 +82,6 @@ struct Wallpaper {
     config_mode: String,
     /// Modification time of the saved choice when we last read it.
     choice_stamp: Option<std::time::SystemTime>,
-    size: (u32, u32),
     exit: bool,
 }
 
@@ -231,30 +242,23 @@ fn main() -> Result<()> {
     let layer_shell = LayerShell::bind(&globals, &qh).map_err(|e| anyhow!("wlr-layer-shell is not available: {e}"))?;
     let shm = Shm::bind(&globals, &qh).map_err(|e| anyhow!("wl_shm: {e}"))?;
 
-    let surface = compositor.create_surface(&qh);
-    let layer = layer_shell.create_layer_surface(&qh, surface, Layer::Background, Some("vesper-wallpaper"), None);
-    layer.set_anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
-    layer.set_exclusive_zone(-1);
-    layer.set_keyboard_interactivity(KeyboardInteractivity::None);
-    layer.commit();
-
     let (tx, rx) = channel::channel::<Done>();
     let mut app = Wallpaper {
         registry_state: RegistryState::new(&globals),
         output_state: OutputState::new(&globals, &qh),
-        pool: SlotPool::new(1920 * 1080 * 4, &shm)?,
         shm,
-        layer,
-        current_path: None,
-        initial_path: Some(path),
-        generation: 0,
+        compositor,
+        layer_shell,
+        qh: qh.clone(),
+        heads: Vec::new(),
+        next_head: 0,
+        current_path: Some(path),
         tx,
         mode,
         color: parse_color(&config.color),
         config_path: config.path.clone(),
         config_mode: config.mode.clone(),
         choice_stamp: choice_stamp(),
-        size: (0, 0),
         exit: false,
     };
 
@@ -283,16 +287,19 @@ fn main() -> Result<()> {
 
 impl Wallpaper {
     /// Start rendering on a worker thread; the result comes back through `finished`.
-    fn start_render(&mut self, source: Source) {
-        let (w, h) = self.size;
-        if w == 0 || h == 0 {
+    fn start_render(&mut self, head: usize, source: Source) {
+        let Some(h) = self.heads.iter_mut().find(|h| h.id == head) else { return };
+        let (w, h_px) = h.size;
+        if w == 0 || h_px == 0 {
             return;
         }
-        self.generation += 1;
+        h.generation += 1;
+        let h = h_px;
+        let generation = self.heads.iter().find(|x| x.id == head).map_or(0, |x| x.generation);
         if let Source::Path(p) = &source {
             self.current_path = Some(p.clone());
         }
-        let (generation, mode, color, tx) = (self.generation, self.mode.clone(), self.color, self.tx.clone());
+        let (mode, color, tx) = (self.mode.clone(), self.color, self.tx.clone());
         std::thread::spawn(move || {
             let started = std::time::Instant::now();
             let image = match source {
@@ -301,30 +308,32 @@ impl Wallpaper {
             };
             let pixels = render(image.as_deref(), w, h, &mode, color);
             tracing::info!("wallpaper ready in {:?}", started.elapsed());
-            let _ = tx.send(Done { generation, size: (w, h), pixels });
+            let _ = tx.send(Done { head, generation, size: (w, h), pixels });
         });
     }
 
     /// A render finished: show it, unless something newer has been asked for since.
     fn finished(&mut self, done: Done) {
-        if done.generation != self.generation || done.size != self.size {
+        let Some(h) = self.heads.iter().find(|h| h.id == done.head) else { return };
+        if done.generation != h.generation || done.size != h.size {
             return;
         }
-        self.present(&done.pixels);
+        self.present(done.head, &done.pixels);
     }
 
-    fn present(&mut self, pixels: &[u8]) {
-        let (w, h) = self.size;
-        let Ok((buffer, canvas)) = self.pool.create_buffer(w as i32, h as i32, w as i32 * 4, wl_shm::Format::Xrgb8888) else {
+    fn present(&mut self, head: usize, pixels: &[u8]) {
+        let Some(head) = self.heads.iter_mut().find(|h| h.id == head) else { return };
+        let (w, h) = head.size;
+        let Ok((buffer, canvas)) = head.pool.create_buffer(w as i32, h as i32, w as i32 * 4, wl_shm::Format::Xrgb8888) else {
             tracing::warn!("could not allocate a {w}x{h} buffer");
             return;
         };
         // the slot can be slightly longer than the picture (alignment), so copy what we have, never skip
         let n = canvas.len().min(pixels.len());
         canvas[..n].copy_from_slice(&pixels[..n]);
-        self.layer.wl_surface().damage_buffer(0, 0, w as i32, h as i32);
-        if buffer.attach_to(self.layer.wl_surface()).is_ok() {
-            self.layer.commit();
+        head.layer.wl_surface().damage_buffer(0, 0, w as i32, h as i32);
+        if buffer.attach_to(head.layer.wl_surface()).is_ok() {
+            head.layer.commit();
         }
     }
 
@@ -340,28 +349,36 @@ impl Wallpaper {
         tracing::info!("wallpaper changed to {path:?} ({mode})");
         self.mode = mode;
         regenerate_colours(&path);
-        self.start_render(Source::Path(path));
+        let ids: Vec<usize> = self.heads.iter().map(|h| h.id).collect();
+        for id in ids {
+            self.start_render(id, Source::Path(path.clone()));
+        }
     }
 }
 
 impl LayerShellHandler for Wallpaper {
-    fn closed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &LayerSurface) {
-        self.exit = true;
+    fn closed(&mut self, _: &Connection, _: &QueueHandle<Self>, layer: &LayerSurface) {
+        // the monitor went away: drop its surface; the last one closing ends the program
+        self.heads.retain(|h| h.layer.wl_surface() != layer.wl_surface());
+        if self.heads.is_empty() {
+            self.exit = true;
+        }
     }
 
-    fn configure(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &LayerSurface, c: LayerSurfaceConfigure, _: u32) {
+    fn configure(&mut self, _: &Connection, _: &QueueHandle<Self>, layer: &LayerSurface, c: LayerSurfaceConfigure, _: u32) {
+        let Some(head) = self.heads.iter_mut().find(|h| h.layer.wl_surface() == layer.wl_surface()) else { return };
         let new = match (NonZeroU32::new(c.new_size.0), NonZeroU32::new(c.new_size.1)) {
             (Some(w), Some(h)) => (w.get(), h.get()),
-            _ => self.size,
+            _ => head.size,
         };
-        if new == self.size && self.initial_path.is_none() {
+        if new == head.size && head.generation > 0 {
             return;
         }
-        self.size = new;
-        match (self.initial_path.take(), self.current_path.clone()) {
-            (Some(path), _) => self.start_render(Source::Path(path)), // first configure: load the wallpaper
-            (None, Some(path)) => self.start_render(Source::Path(path)), // resized: decode again
-            (None, None) => self.start_render(Source::Image(Arc::new(RgbaImage::new(1, 1)))), // no image: just the colour
+        head.size = new;
+        let id = head.id;
+        match self.current_path.clone() {
+            Some(path) => self.start_render(id, Source::Path(path)), // first configure or a resize: decode for this monitor
+            None => self.start_render(id, Source::Image(Arc::new(RgbaImage::new(1, 1)))), // no image: just the colour
         }
     }
 }
@@ -378,9 +395,24 @@ impl OutputHandler for Wallpaper {
     fn output_state(&mut self) -> &mut OutputState {
         &mut self.output_state
     }
-    fn new_output(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {}
+    fn new_output(&mut self, _: &Connection, _: &QueueHandle<Self>, output: wl_output::WlOutput) {
+        if self.heads.iter().any(|h| h.output == output) {
+            return;
+        }
+        let surface = self.compositor.create_surface(&self.qh);
+        let layer = self.layer_shell.create_layer_surface(&self.qh, surface, Layer::Background, Some("vesper-wallpaper"), Some(&output));
+        layer.set_anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
+        layer.set_exclusive_zone(-1);
+        layer.set_keyboard_interactivity(KeyboardInteractivity::None);
+        layer.commit();
+        let Ok(pool) = SlotPool::new(1920 * 1080 * 4, &self.shm) else { return };
+        self.heads.push(Head { id: self.next_head, output, layer, pool, size: (0, 0), generation: 0 });
+        self.next_head += 1;
+    }
     fn update_output(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {}
-    fn output_destroyed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {}
+    fn output_destroyed(&mut self, _: &Connection, _: &QueueHandle<Self>, output: wl_output::WlOutput) {
+        self.heads.retain(|h| h.output != output);
+    }
 }
 
 impl ShmHandler for Wallpaper {

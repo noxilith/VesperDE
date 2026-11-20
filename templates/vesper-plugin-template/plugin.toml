@@ -5,7 +5,12 @@ author      = "Your name"
 description = "Example plugin: a bar widget, a launcher action and a background program"
 license     = "MIT"
 homepage    = "https://github.com/your-name/vesper-plugin-template"
-api         = 1                 # the plugin API this was written for
+api         = 2                 # the plugin API this was written for
+
+# What the plugin may do. Features that are not listed here do not run, and Settings shows this list.
+# run (background program), bar (bar widgets), launcher (actions and search results), hooks (react to events),
+# keys (shortcuts), commands and config (it talks to the desktop over $VESPER_SOCKET: shown to the user, not enforced).
+permissions = ["run", "bar", "launcher", "hooks", "keys"]
 
 # A program started with the session while the plugin is on (it runs in this folder, as you).
 # It is stopped when you turn the plugin off. Its output goes to ~/.local/state/vesper/plugin-<folder>.log
@@ -25,3 +30,34 @@ on_click = "./clicked.sh"
 [[action]]
 name    = "Say hello"
 command = "./clicked.sh"
+
+# Run a command when something happens: window_opened, window_closed, window_focused, workspace_changed, output_changed.
+# The environment has VESPER_EVENT, VESPER_APP_ID, VESPER_TITLE (and VESPER_WORKSPACE for workspace_changed).
+[[hook]]
+event   = "window_opened"
+command = "./on-window.sh"
+
+# A keyboard shortcut. The user can change it in Settings > Keyboard shortcuts ("From plugins").
+[[key]]
+id      = "hello"
+label   = "Say hello"
+default = "Mod+Shift+H"
+command = "./clicked.sh"
+
+# Search results in the launcher. The command runs with the typed text in $VESPER_QUERY and prints one result per line:
+# "title", "title|description" or "title|description|command". With a prefix it is asked only for "hello ..." text.
+[[launcher_source]]
+name    = "Hello results"
+prefix  = "hello"
+command = "./results.sh"
+
+# More (needs "replace" or "style" in permissions above; see docs/plugins.md):
+#
+# Run your own program instead of a built-in one (bar, launcher, lock, notify, wallpaper, wallpaper-picker, switcher,
+# polkit, screenshot, power, settings):
+# [[replace]]
+# component = "launcher"
+# command   = "./my-launcher"
+#
+# Restyle the desktop with a settings file (same keys as config.toml; the user's own config.toml still wins):
+# style = "look.toml"

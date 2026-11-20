@@ -22,6 +22,8 @@ pub struct Ipc {
     clients: Vec<(u64, UnixStream)>,
     next_id: u64,
     last: String,
+    /// The state before `last`, to work out what happened for plugin hooks.
+    prev: Option<State>,
     /// Title and app id last seen per toplevel, so a commit only triggers a broadcast when they changed.
     seen: std::collections::HashMap<smithay::reexports::wayland_server::backend::ObjectId, WindowInfo>,
 }
@@ -36,7 +38,7 @@ pub fn init(event_loop: &EventLoop<'static, Vesper>, state: &mut Vesper, path: &
     let _ = std::fs::remove_file(path); // stale socket from a crashed run
     let listener = UnixListener::bind(path).with_context(|| format!("binding {}", path.display()))?;
     listener.set_nonblocking(true)?;
-    state.ipc = Some(Ipc { path: path.to_owned(), clients: Vec::new(), next_id: 0, last: String::new(), seen: Default::default() });
+    state.ipc = Some(Ipc { path: path.to_owned(), clients: Vec::new(), next_id: 0, last: String::new(), prev: None, seen: Default::default() });
 
     let handle = event_loop.handle();
     let loop_handle = handle.clone();
@@ -114,11 +116,7 @@ impl Vesper {
                 let n = self.layout.workspaces.len() - 1;
                 self.with_workspace_slide(|s| s.layout.active = index.min(n));
             }
-            Command::ToggleFloating => {
-                let rect = self.default_float_rect();
-                self.layout.toggle_floating(rect);
-                self.layout_changed();
-            }
+            Command::ToggleFloating => self.toggle_float_workspace(),
             Command::Screenshot { kind, x, y, w, h } => {
                 use crate::screenshot::CaptureKind;
                 let kind = match (kind.as_str(), x, y, w, h) {
@@ -194,6 +192,21 @@ impl Vesper {
                 self.layout_changed();
             }
             Command::Settings { page } => self.open_settings(page.as_deref()),
+            Command::Action { id } => match crate::input::action_for(&id) {
+                Some(a) => self.run_action(a),
+                None => tracing::warn!("ipc: no shortcut action named {id:?}"),
+            },
+            Command::Spawn { command } => self.spawn(&command),
+            Command::SetConfig { path, value } => {
+                let toml_value = serde_json::from_value::<toml::Value>(value).ok();
+                let res = match toml_value {
+                    Some(v) => vesper_config::Config::set(&path, v).map_err(|e| e.to_string()),
+                    None => vesper_config::Config::unset(&path).map_err(|e| e.to_string()),
+                };
+                if let Err(e) = res {
+                    tracing::warn!("ipc: set_config {path}: {e}");
+                }
+            }
             Command::Minimize => {
                 if self.layout.minimize_focused() {
                     self.layout_changed();
@@ -306,13 +319,21 @@ impl Vesper {
         if self.ipc.is_none() {
             return;
         }
-        let Ok(json) = serde_json::to_string(&self.ipc_state()) else { return };
+        let state = self.ipc_state();
+        let Ok(json) = serde_json::to_string(&state) else { return };
         let ipc = self.ipc.as_mut().unwrap();
         if ipc.last == json {
             return;
         }
         ipc.clients.retain_mut(|(_, s)| writeln!(s, "{json}").is_ok());
         ipc.last = json;
+        let prev = ipc.prev.replace(state.clone());
+        if let Some(prev) = prev {
+            for (event, env) in state_events(&prev, &state) {
+                let env: Vec<(&str, String)> = env.iter().map(|(k, v)| (*k, v.clone())).collect();
+                self.plugin_event(event, &env);
+            }
+        }
     }
 }
 
@@ -348,5 +369,64 @@ impl Vesper {
             self.layout.float_window(&window, rect);
         }
         self.layout_changed();
+    }
+}
+
+/// What changed between two states, as plugin hook events with their environment. Windows are counted per app id, so a title
+/// change on its own is not an event.
+fn state_events(old: &State, new: &State) -> Vec<(&'static str, Vec<(&'static str, String)>)> {
+    let mut out = Vec::new();
+    let count = |s: &State| {
+        let mut m: std::collections::BTreeMap<String, (usize, String)> = Default::default();
+        for w in s.workspaces.iter().flat_map(|w| &w.windows) {
+            let e = m.entry(w.app_id.clone()).or_insert((0, String::new()));
+            e.0 += 1;
+            e.1 = w.title.clone();
+        }
+        m
+    };
+    let (a, b) = (count(old), count(new));
+    for (app, (n, title)) in &b {
+        if *n > a.get(app).map_or(0, |x| x.0) {
+            out.push(("window_opened", vec![("VESPER_APP_ID", app.clone()), ("VESPER_TITLE", title.clone())]));
+        }
+    }
+    for (app, (n, title)) in &a {
+        if *n > b.get(app).map_or(0, |x| x.0) {
+            out.push(("window_closed", vec![("VESPER_APP_ID", app.clone()), ("VESPER_TITLE", title.clone())]));
+        }
+    }
+    if old.focused != new.focused {
+        if let Some(f) = &new.focused {
+            out.push(("window_focused", vec![("VESPER_APP_ID", f.app_id.clone()), ("VESPER_TITLE", f.title.clone())]));
+        }
+    }
+    if old.active != new.active {
+        out.push(("workspace_changed", vec![("VESPER_WORKSPACE", (new.active + 1).to_string())]));
+    }
+    if old.outputs != new.outputs {
+        out.push(("output_changed", Vec::new()));
+    }
+    out
+}
+
+#[cfg(test)]
+mod event_tests {
+    use super::*;
+    use vesper_ipc::Workspace;
+
+    fn win(app: &str) -> WindowInfo {
+        WindowInfo { app_id: app.into(), title: "t".into() }
+    }
+
+    #[test]
+    fn events_from_state_changes() {
+        let a = State { workspaces: vec![Workspace { windows: vec![win("foot")] }], ..Default::default() };
+        let b = State { workspaces: vec![Workspace { windows: vec![win("foot"), win("kitty")] }], focused: Some(win("kitty")), active: 1, ..Default::default() };
+        let names: Vec<&str> = state_events(&a, &b).into_iter().map(|e| e.0).collect();
+        assert_eq!(names, vec!["window_opened", "window_focused", "workspace_changed"]);
+        let names: Vec<&str> = state_events(&b, &a).into_iter().map(|e| e.0).collect();
+        assert_eq!(names, vec!["window_closed", "workspace_changed"]);
+        assert!(state_events(&a, &a).is_empty());
     }
 }

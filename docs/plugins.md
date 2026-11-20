@@ -1,6 +1,6 @@
 # Writing Vesper plugins
 
-A plugin is a folder with a `plugin.toml`. Vesper looks for plugin folders in
+A plugin is a folder with a `plugin.toml`. It can run programs, react to desktop events, add shortcuts, bar widgets and launcher results, and drive the whole desktop through the socket. Vesper looks for plugin folders in
 
 1. `~/.config/vesper/plugins` (what *Settings > Plugins > Install* uses),
 2. `/usr/share/vesper/plugins` (installed with a package).
@@ -20,7 +20,8 @@ author      = "Your name"
 description = "One line for the Settings list"
 license     = "MIT"
 homepage    = "https://github.com/you/hello-plugin"
-api         = 1                   # the plugin API this was written for (Vesper refuses newer ones)
+api         = 2                   # the plugin API this was written for (Vesper refuses newer ones)
+permissions = ["run", "bar", "launcher", "hooks", "keys"]   # what it may do (see Permissions)
 run         = "./daemon.sh"       # optional background program
 
 [[bar_item]]                      # zero or more
@@ -33,6 +34,21 @@ on_click = "./clicked.sh"         # optional
 [[action]]                        # zero or more
 name    = "Say hello"             # shows in the launcher's Apps list
 command = "./clicked.sh"
+
+[[hook]]                          # zero or more
+event   = "window_opened"        # see Hooks
+command = "./on-window.sh"
+
+[[key]]                           # zero or more
+id      = "hello"                # letters, digits, - and _
+label   = "Say hello"            # name in Settings > Keyboard shortcuts
+default = "Mod+Shift+H"
+command = "./clicked.sh"
+
+[[launcher_source]]               # zero or more
+name    = "Hello results"
+prefix  = "hello"                # optional: only asked when the text starts with it
+command = "./results.sh"
 ```
 
 Unknown keys are an error, so typos are caught when you install the plugin.
@@ -66,6 +82,84 @@ Each `[[action]]` is added to the launcher's Apps list (and found by typing its 
 started) when it is turned off or the session ends. It is not restarted if it exits on its own. Its output goes to
 `~/.local/state/vesper/plugin-<folder>.log`.
 
+## Permissions
+
+`permissions` lists what the plugin needs. Settings shows it next to the plugin, and **features that are not listed do not
+run**:
+
+| permission | lets the plugin use |
+|---|---|
+| `run` | `run` (a background program) |
+| `bar` | `[[bar_item]]` |
+| `launcher` | `[[action]]` and `[[launcher_source]]` |
+| `hooks` | `[[hook]]` |
+| `keys` | `[[key]]` |
+| `commands` | send commands to `$VESPER_SOCKET` (shown to the user; the socket does not tell plugins apart, so this one is not enforced) |
+| `config` | change settings with `set_config` (shown, not enforced) |
+| `replace` | `[[replace]]`: run your own program instead of a built-in one |
+| `style` | `style = "file.toml"`: restyle the desktop with settings |
+
+A plugin written for `api = 1` keeps `run`, `bar` and `launcher` without listing them, so old plugins still work.
+
+## Replacing a built-in program
+
+`[[replace]]` makes Vesper start your program instead of one of its own: `bar`, `launcher`, `lock`, `notify`, `wallpaper`,
+`wallpaper-picker`, `switcher`, `polkit`, `screenshot`, `power` or `settings`.
+
+```toml
+permissions = ["replace"]
+
+[[replace]]
+component = "launcher"
+command   = "./my-launcher"       # runs in the plugin folder, gets the same arguments (for example --mode emoji)
+```
+
+Your program takes over completely, so it has to do the job: a bar or launcher is a wlr-layer-shell client (you can start from
+the code of `vesper-bar` and `vesper-launcher`), a lock screen must use ext-session-lock, and the compositor's socket
+(`$VESPER_SOCKET`) gives you the state and commands. The launcher and the lock screen use the replacement the next time they
+open; the bar, notifications and wallpaper the next time you log in. If two plugins replace the same program, the first by
+name wins. Turn the plugin off to get the built-in one back. A replacement lock screen is part of your security: only use
+ones you trust.
+
+## Restyling with a settings file
+
+`style = "look.toml"` points to a file in the plugin folder that holds settings with the same keys as `config.toml`:
+
+```toml
+# look.toml
+[bar]
+style = "islands"
+opacity = 80
+
+[colors]
+primary = "#ff8a3d"
+
+[launcher]
+position = "center"
+```
+
+They apply while the plugin is on, under the user's own `config.toml`, which still wins for any key it sets. A file with a key
+Vesper does not know is ignored (and logged) instead of breaking the config. This is how a theme plugin works: no code, just
+looks.
+
+## Hooks
+
+`[[hook]]` runs `command` when `event` happens: `window_opened`, `window_closed`, `window_focused`, `workspace_changed` or
+`output_changed`. The environment has `VESPER_EVENT`, `VESPER_APP_ID`, `VESPER_TITLE` and, for `workspace_changed`,
+`VESPER_WORKSPACE` (1-based). Windows are counted per app id, so a title change on its own is not an event.
+
+## Shortcuts
+
+`[[key]]` adds a keyboard shortcut. `default` is written like `Mod+Shift+H` (`Mod` is Super, or Alt if the user set that;
+several keys are separated by commas). The user can change it in Settings > Keyboard shortcuts > From plugins; that is saved
+as `plugin:<folder>/<id>` under `[keys]`.
+
+## Launcher search results
+
+`[[launcher_source]]` runs `command` while the user types in the launcher, with the text in `$VESPER_QUERY` (without the
+`prefix`, if you set one). Print up to 20 results, one per line: `title`, `title|description` or `title|description|command`.
+Picking a result runs its command (the title if there is none). Results appear above the normal app matches.
+
 ## Talking to the desktop
 
 The desktop has a Unix socket at `$VESPER_SOCKET`. It speaks newline-delimited JSON.
@@ -91,6 +185,9 @@ The desktop has a Unix socket at `$VESPER_SOCKET`. It speaks newline-delimited J
 {"cmd":"show_osd","kind":"volume"}
 {"cmd":"clipboard","text":"copied text","summary":"Notification title","body":"Notification text"}
 {"cmd":"screenshot","kind":"screen"}
+{"cmd":"action","id":"fullscreen"}
+{"cmd":"spawn","command":"foot -e htop"}
+{"cmd":"set_config","path":"blur.strength","value":40}
 ```
 
 The full list is the `Command` enum in `crates/vesper-ipc/src/lib.rs`. Example in Python:
@@ -124,4 +221,8 @@ it with *Settings > Plugins > Install from a folder or .tar.gz*.
 
 ## Versions
 
-`api = 1` is the first plugin API (this document). Anything that changes how existing plugins behave bumps it.
+`api = 2` (this document) adds `permissions`, hooks, shortcuts, launcher search results and the `action`, `spawn` and
+`set_config` commands. `api = 1` plugins keep working. Anything that changes how existing plugins behave bumps it.
+
+`{"cmd":"action","id":...}` runs any shortcut action by its id: the ids are the `id` values of `BINDS` in
+`crates/vesper-config/src/keys.rs` (`terminal`, `launcher`, `close`, `fullscreen`, `float`, `lock`, ...).

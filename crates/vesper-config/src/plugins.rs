@@ -12,7 +12,16 @@ use serde::Deserialize;
 use crate::Config;
 
 /// The plugin API version this build understands (`api` in `plugin.toml`).
-pub const API: u32 = 1;
+pub const API: u32 = 2;
+
+/// What a plugin may ask for in `permissions` (API 2). A plugin written for API 1 keeps its old rights: `run`, `bar` and `launcher`.
+pub const PERMISSIONS: [&str; 9] = ["run", "bar", "launcher", "hooks", "keys", "commands", "config", "replace", "style"];
+
+/// The programs of the desktop that a plugin may replace (`[[replace]] component = "launcher"`).
+pub const COMPONENTS: [&str; 11] = ["bar", "launcher", "lock", "notify", "wallpaper", "wallpaper-picker", "switcher", "polkit", "screenshot", "power", "settings"];
+
+/// Events a `[[hook]]` may name.
+pub const EVENTS: [&str; 5] = ["window_opened", "window_closed", "window_focused", "workspace_changed", "output_changed"];
 
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -29,6 +38,19 @@ pub struct Manifest {
     pub run: String,
     pub bar_item: Vec<BarItem>,
     pub action: Vec<Action>,
+    /// What the plugin needs (API 2): see [`PERMISSIONS`]. Settings shows this list; features that are not listed do not run.
+    pub permissions: Vec<String>,
+    /// Commands run when something happens on the desktop (needs `hooks`).
+    pub hook: Vec<Hook>,
+    /// Keyboard shortcuts the plugin adds (needs `keys`); the user can change them in Settings.
+    pub key: Vec<Key>,
+    /// Search results the plugin adds to the launcher (needs `launcher`).
+    pub launcher_source: Vec<Source>,
+    /// A TOML file in the plugin folder with settings (the same keys as `config.toml`: `[bar]`, `[colors]`, `[launcher]` ...) that
+    /// restyle the desktop while the plugin is on (needs `style`). The user's own config.toml still wins over it.
+    pub style: String,
+    /// Programs of the desktop this plugin replaces with its own (needs `replace`).
+    pub replace: Vec<Replace>,
 }
 
 /// A widget for the top bar. `command` is run every `interval` seconds and its first line of output is shown; an empty
@@ -43,6 +65,47 @@ pub struct BarItem {
     pub interval: u32,
     /// Run when the widget is clicked.
     pub on_click: String,
+}
+
+/// Run `command` when `event` happens. The environment has `VESPER_EVENT`, `VESPER_APP_ID`, `VESPER_TITLE` and (for workspace
+/// events) `VESPER_WORKSPACE`.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Hook {
+    pub event: String,
+    pub command: String,
+}
+
+/// A shortcut: `default` is written like `Mod+Shift+G` (see Settings > Keyboard shortcuts).
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Key {
+    pub id: String,
+    pub label: String,
+    pub default: String,
+    pub command: String,
+}
+
+/// Run `command` instead of the built-in program `component` (`bar`, `launcher`, `lock`, ...). It gets the same arguments the
+/// built-in one would, and runs in the plugin folder. A replacement lock screen must speak ext-session-lock, a replacement bar
+/// or launcher is a layer-shell client; they are used the next time the program starts (the launcher and lock screen: the next
+/// time they open; the bar, notifications and wallpaper: the next login).
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Replace {
+    pub component: String,
+    pub command: String,
+}
+
+/// A search provider for the launcher. `command` runs with the typed text in `VESPER_QUERY` and prints one result per line as
+/// `title`, `title|description` or `title|description|command` (the command runs when it is picked; without one the title is run).
+/// With a `prefix` (for example `calc`) it is asked only when the text starts with it, and the prefix is cut off.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Source {
+    pub name: String,
+    pub command: String,
+    pub prefix: String,
 }
 
 /// An entry in the launcher's app list.
@@ -62,6 +125,16 @@ pub struct Plugin {
     pub enabled: bool,
     /// It was written for a newer API than this build knows.
     pub too_new: bool,
+}
+
+impl Plugin {
+    /// May this plugin use `feature` (one of [`PERMISSIONS`])? API 1 plugins have `run`, `bar` and `launcher`.
+    pub fn can(&self, feature: &str) -> bool {
+        if self.manifest.api < 2 {
+            return matches!(feature, "run" | "bar" | "launcher");
+        }
+        self.manifest.permissions.iter().any(|p| p == feature)
+    }
 }
 
 /// Folders that hold plugins: yours first, then the ones installed with Vesper.
@@ -89,6 +162,38 @@ pub fn read_manifest(dir: &Path) -> Result<Manifest, String> {
     for b in &m.bar_item {
         if b.id.is_empty() || !b.id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
             return Err(format!("a bar_item id must be letters, digits, - or _ (got {:?})", b.id));
+        }
+    }
+    for p in &m.permissions {
+        if !PERMISSIONS.contains(&p.as_str()) {
+            return Err(format!("unknown permission {p:?} (known: {})", PERMISSIONS.join(", ")));
+        }
+    }
+    for h in &m.hook {
+        if !EVENTS.contains(&h.event.as_str()) {
+            return Err(format!("unknown hook event {:?} (known: {})", h.event, EVENTS.join(", ")));
+        }
+    }
+    for r in &m.replace {
+        if !COMPONENTS.contains(&r.component.trim_start_matches("vesper-")) {
+            return Err(format!("cannot replace {:?} (known: {})", r.component, COMPONENTS.join(", ")));
+        }
+        if r.command.trim().is_empty() {
+            return Err(format!("replace {:?} needs a command", r.component));
+        }
+    }
+    if !m.style.is_empty() {
+        let p = Path::new(&m.style);
+        if p.is_absolute() || p.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+            return Err("style must be a file inside the plugin folder".into());
+        }
+    }
+    for k in &m.key {
+        if k.id.is_empty() || !k.id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+            return Err(format!("a key id must be letters, digits, - or _ (got {:?})", k.id));
+        }
+        if crate::keys::parse_list(&k.default).is_empty() {
+            return Err(format!("key {:?}: '{}' is not a key combination", k.id, k.default));
         }
     }
     Ok(m)
@@ -255,6 +360,72 @@ mod tests {
         let _ = fs::remove_dir_all(&d);
     }
 
+    #[test]
+    fn api2_permissions_hooks_keys() {
+        let d = std::env::temp_dir().join(format!("vesper-plugin-api2-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(&d).unwrap();
+        let write = |t: &str| fs::write(d.join("plugin.toml"), t).unwrap();
+        write("name = \"P\"\napi = 2\npermissions = [\"hooks\", \"keys\"]\n[[hook]]\nevent = \"window_opened\"\ncommand = \"./a.sh\"\n[[key]]\nid = \"go\"\ndefault = \"Mod+Shift+G\"\ncommand = \"./go.sh\"\n[[launcher_source]]\nname = \"Calc\"\ncommand = \"./q.sh\"\nprefix = \"calc\"\n");
+        let m = read_manifest(&d).unwrap();
+        let p = Plugin { id: "p".into(), dir: d.clone(), enabled: true, too_new: false, manifest: m };
+        assert!(p.can("hooks") && p.can("keys"));
+        assert!(!p.can("launcher") && !p.can("run") && !p.can("bar"), "API 2 gets only what it lists");
+        let old = Plugin { manifest: Manifest { api: 1, ..Default::default() }, ..p.clone() };
+        assert!(old.can("run") && old.can("bar") && old.can("launcher") && !old.can("hooks"));
+        write("name = \"P\"\napi = 2\npermissions = [\"root\"]\n");
+        assert!(read_manifest(&d).unwrap_err().contains("permission"));
+        write("name = \"P\"\napi = 2\n[[hook]]\nevent = \"sneeze\"\ncommand = \"x\"\n");
+        assert!(read_manifest(&d).unwrap_err().contains("event"));
+        write("name = \"P\"\napi = 2\n[[key]]\nid = \"a\"\ndefault = \"Hyper+Q\"\ncommand = \"x\"\n");
+        assert!(read_manifest(&d).is_err());
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn replace_and_style_manifest_and_merge() {
+        let d = std::env::temp_dir().join(format!("vesper-plugin-style-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(&d).unwrap();
+        let write = |t: &str| fs::write(d.join("plugin.toml"), t).unwrap();
+        write("name = \"T\"\napi = 2\npermissions = [\"replace\", \"style\"]\nstyle = \"look.toml\"\n[[replace]]\ncomponent = \"launcher\"\ncommand = \"./my-launcher\"\n");
+        let m = read_manifest(&d).unwrap();
+        let p = Plugin { id: "t".into(), dir: d.clone(), enabled: true, too_new: false, manifest: m };
+        assert!(p.can("replace") && p.can("style"));
+        write("name = \"T\"\napi = 2\n[[replace]]\ncomponent = \"kernel\"\ncommand = \"x\"\n");
+        assert!(read_manifest(&d).is_err(), "unknown component");
+        write("name = \"T\"\napi = 2\nstyle = \"../escape.toml\"\n");
+        assert!(read_manifest(&d).is_err(), "style outside the folder");
+        let mut base: toml::Table = "[bar]\nheight = 30\nopacity = 80\n[launcher]\nrows = 8\n".parse().unwrap();
+        let top: toml::Table = "[bar]\nheight = 40\n".parse().unwrap();
+        deep_merge(&mut base, &top);
+        assert_eq!(base["bar"]["height"].as_integer(), Some(40));
+        assert_eq!(base["bar"]["opacity"].as_integer(), Some(80), "keys not in the top layer stay");
+        assert_eq!(base["launcher"]["rows"].as_integer(), Some(8));
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    /// A plugin's style file sits under the user's config, and a bad one is left out.
+    #[test]
+    fn style_layer_applies_under_the_user_config() {
+        let _env = crate::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let root = std::env::temp_dir().join(format!("vesper-style-e2e-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let pdir = root.join("plugins/looks");
+        fs::create_dir_all(&pdir).unwrap();
+        std::env::set_var("VESPER_CONFIG", root.join("config.toml"));
+        fs::write(pdir.join("plugin.toml"), "name = \"Looks\"\napi = 2\npermissions = [\"style\"]\nstyle = \"look.toml\"\n").unwrap();
+        fs::write(pdir.join("look.toml"), "[bar]\nheight = 44\nopacity = 70\n[launcher]\nrows = 11\n").unwrap();
+        fs::write(root.join("config.toml"), "[plugins]\nenabled = [\"looks\"]\n[bar]\nheight = 36\n").unwrap();
+        let cfg = Config::load();
+        assert_eq!(cfg.bar.height, 36, "the user's own value wins");
+        assert_eq!(cfg.bar.opacity, 70, "the plugin's value fills in");
+        assert_eq!(cfg.launcher.rows, 11);
+        fs::write(pdir.join("look.toml"), "[bar]\nnot_a_setting = 1\n").unwrap();
+        assert_eq!(Config::load().bar.height, 36, "a bad style file is ignored, not fatal");
+        let _ = fs::remove_dir_all(&root);
+    }
+
     /// One test (it points the config at a temporary folder): install, find, enable, remove.
     #[test]
     fn install_discover_enable_remove() {
@@ -303,8 +474,53 @@ mod template_tests {
         assert_eq!(m.api, API);
         assert_eq!(m.bar_item.len(), 1);
         assert_eq!(m.action.len(), 1);
-        for f in ["status.sh", "clicked.sh", "daemon.sh", "package.sh"] {
+        for f in ["status.sh", "clicked.sh", "daemon.sh", "package.sh", "on-window.sh", "results.sh"] {
             assert!(dir.join(f).is_file(), "{f} is missing");
+        }
+    }
+}
+
+/// The config key under `[keys]` for a plugin's shortcut.
+pub fn key_id(plugin: &str, key: &str) -> String {
+    format!("plugin:{plugin}/{key}")
+}
+
+/// The programs enabled plugins (with the `replace` permission) stand in for: the full program name (`vesper-launcher`) with the
+/// plugin that replaces it and the command to run. The first plugin (by name) for a program wins.
+pub fn replacements(enabled: &[String]) -> Vec<(String, Plugin, String)> {
+    let mut out: Vec<(String, Plugin, String)> = Vec::new();
+    for p in active(enabled).into_iter().filter(|p| p.can("replace")) {
+        for r in &p.manifest.replace {
+            let name = format!("vesper-{}", r.component.trim_start_matches("vesper-"));
+            if !out.iter().any(|(n, _, _)| *n == name) {
+                out.push((name, p.clone(), r.command.clone()));
+            }
+        }
+    }
+    out
+}
+
+/// The `style` files of enabled plugins (with the `style` permission), as settings tables, in plugin order.
+pub fn style_layers(enabled: &[String]) -> Vec<(String, toml::Table)> {
+    let mut out = Vec::new();
+    for p in active(enabled).into_iter().filter(|p| p.can("style") && !p.manifest.style.is_empty()) {
+        let path = p.dir.join(&p.manifest.style);
+        match fs::read_to_string(&path).map_err(|e| e.to_string()).and_then(|t| t.parse::<toml::Table>().map_err(|e| e.to_string())) {
+            Ok(t) => out.push((p.id.clone(), t)),
+            Err(e) => tracing::warn!("plugin {}: style file {}: {e}", p.id, path.display()),
+        }
+    }
+    out
+}
+
+/// Put `top` over `base`: tables merge key by key, anything else is replaced.
+pub fn deep_merge(base: &mut toml::Table, top: &toml::Table) {
+    for (k, v) in top {
+        match (base.get_mut(k), v) {
+            (Some(toml::Value::Table(b)), toml::Value::Table(t)) => deep_merge(b, t),
+            _ => {
+                base.insert(k.clone(), v.clone());
+            }
         }
     }
 }

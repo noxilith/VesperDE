@@ -356,31 +356,31 @@ impl Vesper {
 
         // screen capture clients (wlr-screencopy: grim, the screen-sharing portal) get this frame
         if self.extcapture.as_ref().is_some_and(|e| e.wants()) {
-            if let Some(mode) = output.current_mode() {
+            if let Some(size) = crate::outputs::upright_size(&output) {
                 let clean = crate::render::output_elements(renderer, &self.space, &output, None, borders.clone(), hint.clone(), Some((&mut self.blur, &blur_params)), self.round.as_ref().map(|r| (r, corner)), lock_surfaces.as_deref());
                 if let Some(e) = self.extcapture.as_mut() {
-                    e.fulfil(renderer, &output, &self.space, mode.size, output.current_scale().fractional_scale(), &elements, &clean);
+                    e.fulfil(renderer, &output, &self.space, size, output.current_scale().fractional_scale(), &elements, &clean);
                 }
             }
         }
         if self.screencopy.wants(&output) {
-            if let Some(mode) = output.current_mode() {
+            if let Some(size) = crate::outputs::upright_size(&output) {
                 let frames = self.screencopy.take(&output);
                 let clean = crate::render::output_elements(renderer, &self.space, &output, None, borders.clone(), hint.clone(), Some((&mut self.blur, &blur_params)), self.round.as_ref().map(|r| (r, corner)), lock_surfaces.as_deref());
-                self.screencopy.fulfil(frames, renderer, mode.size, output.current_scale().fractional_scale(), &elements, &clean);
+                self.screencopy.fulfil(frames, renderer, size, output.current_scale().fractional_scale(), &elements, &clean);
             }
         }
 
         if capture.is_some() {
-            if let Some(mode) = output.current_mode() {
+            if let Some(size) = crate::outputs::upright_size(&output) {
                 // the screenshot never contains the pointer
                 let clean = crate::render::output_elements(renderer, &self.space, &output, None, borders.clone(),
             hint.clone(), Some((&mut self.blur, &blur_params)), self.round.as_ref().map(|r| (r, corner)), lock_surfaces.as_deref());
-                if let Some(rgba) = crate::screenshot::grab(renderer, &clean, mode.size, output.current_scale().fractional_scale()) {
+                if let Some(rgba) = crate::screenshot::grab(renderer, &clean, size, output.current_scale().fractional_scale()) {
                     if let Some((windows, pick)) = freeze {
-                        crate::screenshot::write_freeze(rgba, mode.size.w as u32, mode.size.h as u32, windows, pick);
+                        crate::screenshot::write_freeze(rgba, size.w as u32, size.h as u32, windows, pick);
                     } else {
-                        crate::screenshot::finish(rgba, mode.size.w as u32, mode.size.h as u32, crop, shot_dir, shot_tx);
+                        crate::screenshot::finish(rgba, size.w as u32, size.h as u32, crop, shot_dir, shot_tx);
                     }
                 }
             }
@@ -559,15 +559,17 @@ impl Vesper {
                     tracing::warn!("{name}: could not switch mode: {err}");
                 }
             }
-            s.output.change_current_state(Some(wl_mode), None, Some(smithay::output::Scale::Fractional(scale)), None);
+            let transform = crate::outputs::parse_transform(&cfg.transform);
+            s.output.change_current_state(Some(wl_mode), Some(transform), Some(smithay::output::Scale::Fractional(scale)), None);
             if cfg.enabled == Some(false) {
                 s.off = true;
                 hidden.push(s.output.clone());
                 continue;
             }
             s.off = false;
-            let logical_w = (wl_mode.size.w as f64 / scale).round() as i32;
-            let logical_h = (wl_mode.size.h as f64 / scale).round() as i32;
+            let upright = transform.transform_size(wl_mode.size);
+            let logical_w = (upright.w as f64 / scale).round() as i32;
+            let logical_h = (upright.h as f64 / scale).round() as i32;
             placed.push((
                 crtc,
                 s.output.clone(),

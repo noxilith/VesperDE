@@ -1,4 +1,4 @@
-//! `ext-image-copy-capture-v1` with `ext-image-capture-source-v1`: the newer capture protocol that
+//! `ext-iSource::Output(o) => crate::outputs::upright_size(o).map(|s| (s.w, s.h))age-copy-capture-v1` with `ext-image-capture-source-v1`: the newer capture protocol that
 //! xdg-desktop-portal-wlr (0.8 and later) uses, and the one that can capture a single window. Together with
 //! `ext-foreign-toplevel-list-v1` it is what lets the screen-picker of Discord, browsers and OBS offer "a window".
 //!

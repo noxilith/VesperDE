@@ -94,6 +94,9 @@ struct Bar {
     battery_warned: u32,
     battery_suspended: bool,
     tray_started: bool,
+    /// Set in a copy of the bar that runs on one extra monitor: the output name. The first bar starts and stops these.
+    secondary: Option<String>,
+    children: std::collections::HashMap<String, (std::process::Child, std::time::Instant)>,
     layer: LayerSurface,
     pointer: Option<wl_pointer::WlPointer>,
     keyboard: Option<wl_keyboard::WlKeyboard>,
@@ -154,7 +157,12 @@ fn main() -> Result<()> {
     let style = draw::Style::from_config(&config.bar);
     let height = style.surface_height() as u32;
     let surface = compositor.create_surface(&qh);
-    let layer = layer_shell.create_layer_surface(&qh, surface, Layer::Top, Some("vesper-bar"), None);
+    let secondary = std::env::var("VESPER_BAR_OUTPUT").ok().filter(|s| !s.is_empty());
+    let layer_name = match &secondary {
+        Some(out) => format!("vesper-bar@{out}"),
+        None => "vesper-bar".to_string(),
+    };
+    let layer = layer_shell.create_layer_surface(&qh, surface, Layer::Top, Some(layer_name.as_str()), None);
     layer.set_anchor(Anchor::TOP | Anchor::LEFT | Anchor::RIGHT);
     layer.set_size(0, height);
     layer.set_exclusive_zone(height as i32);
@@ -185,6 +193,8 @@ fn main() -> Result<()> {
         battery_warned: 100,
         battery_suspended: false,
         tray_started: false,
+        secondary: std::env::var("VESPER_BAR_OUTPUT").ok().filter(|s| !s.is_empty()),
+        children: Default::default(),
         layer,
         pointer: None,
         keyboard: None,
@@ -235,7 +245,7 @@ fn main() -> Result<()> {
                         }
                         // the volume or brightness keys were pressed: show the new level on screen shortly after
                         if let Some(prev) = bar.last_osd_seq {
-                            if prev != state.osd_seq {
+                            if bar.secondary.is_none() && prev != state.osd_seq {
                                 let kind: &'static str = if state.osd_kind == "brightness" { "brightness" } else { "volume" };
                                 if let Some(handle) = KEY_LOOP.with(|k| k.borrow().clone()) {
                                     let _ = handle.insert_source(
@@ -250,10 +260,11 @@ fn main() -> Result<()> {
                         }
                         bar.last_osd_seq = Some(state.osd_seq);
                         let seq = state.start_menu;
-                        let pressed = bar.start_seen.is_some_and(|s| s != seq);
+                        let pressed = bar.secondary.is_none() && bar.start_seen.is_some_and(|s| s != seq);
                         bar.start_seen = Some(seq);
                         bar.state = state;
                         bar.redraw();
+                        bar.sync_secondary_bars();
                         if pressed {
                             bar.open_start_menu();
                         }
@@ -397,8 +408,47 @@ impl Bar {
         self.plugin_items = items;
     }
 
+    /// The first bar runs one more copy of itself on every other monitor (and stops it when the monitor goes away).
+    fn sync_secondary_bars(&mut self) {
+        if self.secondary.is_some() {
+            return;
+        }
+        let want: Vec<String> = if vesper_config::Config::load().bar.all_monitors {
+            self.state.outputs.iter().filter(|o| o.enabled && !o.primary).map(|o| o.name.clone()).collect()
+        } else {
+            Vec::new()
+        };
+        let stale: Vec<String> = self.children.keys().filter(|n| !want.contains(n)).cloned().collect();
+        for n in stale {
+            if let Some((mut c, _)) = self.children.remove(&n) {
+                let _ = c.kill();
+                let _ = c.wait();
+            }
+        }
+        self.children.retain(|_, (c, _)| matches!(c.try_wait(), Ok(None)));
+        let Ok(exe) = std::env::current_exe() else { return };
+        for n in want {
+            if self.children.get(&n).is_some_and(|(_, at)| at.elapsed() < Duration::from_secs(3)) {
+                continue;
+            }
+            if self.children.contains_key(&n) {
+                continue;
+            }
+            match std::process::Command::new(&exe).env("VESPER_BAR_OUTPUT", &n).spawn() {
+                Ok(c) => {
+                    tracing::info!("bar for {n}: started");
+                    self.children.insert(n, (c, std::time::Instant::now()));
+                }
+                Err(e) => tracing::warn!("bar for {n}: could not start: {e}"),
+            }
+        }
+    }
+
     /// Warn at 20, 10 and 5 percent while discharging, and suspend at 3 if the setting says so.
     fn check_battery(&mut self) {
+        if self.secondary.is_some() {
+            return; // the first bar does the warnings
+        }
         let Some(b) = self.poller.sys.battery else { return };
         if b.charging {
             self.battery_warned = 100;
@@ -428,7 +478,7 @@ impl Bar {
             self.media_started = true;
             dbus::start_media(self.dbus_tx.clone());
         }
-        if on("tray") && !self.tray_started {
+        if on("tray") && !self.tray_started && self.secondary.is_none() {
             self.tray_started = true;
             dbus::start_tray(self.dbus_tx.clone());
         }
@@ -482,7 +532,11 @@ impl Bar {
         self.close_popup();
         let anchor = self.hit_centre(x);
         let surface = self.compositor.create_surface(&self.qh);
-        let layer = self.layer_shell.create_layer_surface(&self.qh, surface, Layer::Overlay, Some("vesper-bar-popup"), None);
+        let popup_name = match &self.secondary {
+            Some(out) => format!("vesper-bar-popup@{out}"),
+            None => "vesper-bar-popup".to_string(),
+        };
+        let layer = self.layer_shell.create_layer_surface(&self.qh, surface, Layer::Overlay, Some(popup_name.as_str()), None);
         layer.set_anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
         layer.set_size(0, 0);
         layer.set_margin(self.height as i32, 0, 0, 0);
@@ -539,7 +593,17 @@ impl Bar {
                     v.percent = pct;
                 }
             }
-            popup::Slider::App(i) => {
+            popup::Slider::Mic => {
+                let Some(pw) = self.popup.as_mut() else { return };
+                if pw.pop.mic_percent == pct {
+                    return;
+                }
+                pw.pop.mic_percent = pct;
+                popup::spawn("wpctl", &["set-volume", "@DEFAULT_AUDIO_SOURCE@", &format!("{pct}%")]);
+                self.redraw_popup();
+                return;
+            }
+                    popup::Slider::App(i) => {
                 let Some(pw) = self.popup.as_mut() else { return };
                 let Some(app) = pw.pop.apps.get_mut(i) else { return };
                 if app.percent == pct {
@@ -707,6 +771,22 @@ impl Bar {
                     }
                 }
             }
+            Some(popup::PHit::WifiRefresh) => {
+                popup::rescan_wifi();
+                if let Some(pw) = self.popup.as_mut() {
+                    match popup::read_wifi_now() {
+                        Ok(n) => {
+                            pw.pop.nets = n;
+                            pw.pop.nets_error = None;
+                        }
+                        Err(e) => {
+                            pw.pop.nets.clear();
+                            pw.pop.nets_error = Some(e);
+                        }
+                    }
+                }
+                self.redraw_popup();
+            }
             Some(popup::PHit::WifiConnect) => self.wifi_submit(),
             Some(popup::PHit::WifiCancel) => {
                 pw.pop.prompt = None;
@@ -738,6 +818,7 @@ impl Bar {
                     A::Sleep => self.send(Command::Suspend),
                     A::Logout => self.send(Command::Logout),
                     A::Apps => self.send(Command::Launcher),
+                    A::PowerMenu => self.send(Command::PowerMenu),
                     A::Files => self.send(Command::Files),
                     A::Clipboard => self.send(Command::LauncherMode { mode: "clipboard".into() }),
                     A::Emoji => self.send(Command::LauncherMode { mode: "emoji".into() }),
@@ -763,7 +844,9 @@ impl Bar {
         // tell the compositor what is drawn, so blur follows the real shape
         let rects: Vec<[i32; 4]> = shapes.iter().map(|s| s.body()).collect();
         if rects != self.last_shapes {
-            if let Ok(json) = serde_json::to_string(&Command::BarShapes { rects: rects.clone() }) {
+            if self.secondary.is_some() {
+                // only the first bar tells the compositor its shape (for blur)
+            } else if let Ok(json) = serde_json::to_string(&Command::BarShapes { rects: rects.clone() }) {
                 let _ = writeln!(self.ipc, "{json}");
             }
             self.last_shapes = rects;
@@ -908,7 +991,7 @@ impl LayerShellHandler for Bar {
             self.height = h.get();
         }
         self.configured = true;
-        self.clock = chrono::Local::now().format("%a %d %b  %H:%M").to_string();
+        self.clock = chrono::Local::now().format("%H:%M\u{1}%a %d").to_string();
         self.redraw();
     }
 }
@@ -1219,7 +1302,7 @@ impl Bar {
     /// (for changes made by the keys); scrolling in the bar has already updated it.
     fn show_osd(&mut self, kind: &'static str, refresh: bool) {
         use smithay_client_toolkit::reexports::calloop::timer::{TimeoutAction, Timer};
-        if self.popup.is_some() || !vesper_config::Config::load().bar.osd {
+        if self.popup.is_some() || self.secondary.is_some() || !vesper_config::Config::load().bar.osd {
             return; // the menu is on screen showing the same thing, or the popup is switched off
         }
         if refresh {

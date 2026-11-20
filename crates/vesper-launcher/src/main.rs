@@ -42,12 +42,9 @@ use vesper_apps::{Apps, DesktopEntry, Icons};
 use vesper_config::theme::{alpha, with_alpha, Palette};
 use vesper_gfx::{Canvas, Image, Rgba, Text};
 
-const ROW_H: i32 = 44;
-const MAX_ROWS: usize = 8;
 const PAD: i32 = 14;
 const INPUT_H: i32 = 46;
 const CHIP_H: i32 = 32;
-const ICON: i32 = 28;
 /// Size of one emoji cell and how many rows of them show.
 const CELL: i32 = 52;
 const EMOJI_ROWS: usize = 5;
@@ -220,6 +217,17 @@ struct Launcher {
     hover: Option<Hit>,
     started: Option<std::time::Instant>,
     files_tx: channel::Sender<Vec<FileEntry>>,
+    /// Search providers that plugins add (folder, source), the answers that came back for `asked`, and how many entries of `apps` are real.
+    sources: Vec<(PathBuf, vesper_config::plugins::Source, String)>,
+    src_tx: channel::Sender<(String, Vec<DesktopEntry>)>,
+    dynamic: Vec<DesktopEntry>,
+    asked: String,
+    base_len: usize,
+
+    // layout from `[launcher]`
+    row_h: i32,
+    max_rows: usize,
+    icon: i32,
 
     // the top bar's look
     radius: f32,
@@ -250,8 +258,12 @@ fn main() -> Result<()> {
     let width = config.launcher.width.clamp(400, 1100);
     let surface = compositor.create_surface(&qh);
     let layer = layer_shell.create_layer_surface(&qh, surface, Layer::Overlay, Some("vesper-launcher"), None);
-    layer.set_anchor(Anchor::TOP);
-    layer.set_margin(bar_bottom + config.launcher.gap.min(200) as i32, 0, 0, 0);
+    if config.launcher.position == "center" {
+        layer.set_anchor(Anchor::empty());
+    } else {
+        layer.set_anchor(Anchor::TOP);
+        layer.set_margin(bar_bottom + config.launcher.gap.min(200) as i32, 0, 0, 0);
+    }
     let height = (INPUT_H + CHIP_H + 3 * PAD + PAD / 2) as u32;
     layer.set_size(width, height);
     layer.set_exclusive_zone(-1);
@@ -267,7 +279,10 @@ fn main() -> Result<()> {
     tracing::debug!("connected after {:?}", t0.elapsed());
     let mut apps: Vec<DesktopEntry> = Apps::load().entries().iter().filter(|e| !e.no_display).cloned().collect();
     // actions that enabled plugins add to the list
-    for p in vesper_config::plugins::active(&config.plugins.enabled) {
+    let plugins_on = vesper_config::plugins::active(&config.plugins.enabled);
+    let sources: Vec<(PathBuf, vesper_config::plugins::Source, String)> =
+        plugins_on.iter().filter(|p| p.can("launcher")).flat_map(|p| p.manifest.launcher_source.iter().filter(|s| !s.command.trim().is_empty()).map(|s| (p.dir.clone(), s.clone(), p.id.clone()))).collect();
+    for p in plugins_on.iter().filter(|p| p.can("launcher")) {
         for (n, a) in p.manifest.action.iter().enumerate().filter(|(_, a)| !a.name.trim().is_empty() && !a.command.trim().is_empty()) {
             let script = vesper_config::plugins::shell_in(&p.dir, &a.command).replace('\'', "'\\''");
             apps.push(DesktopEntry { id: format!("plugin-{}-{n}", p.id), name: a.name.clone(), exec: format!("sh -c '{script}'"), categories: vec!["Plugin".into()], ..Default::default() });
@@ -275,8 +290,10 @@ fn main() -> Result<()> {
     }
     apps.sort_by_key(|e| e.name.to_lowercase());
     apps.dedup_by(|a, b| a.name == b.name && a.exec == b.exec);
+    let base_len = apps.len();
 
     let (files_tx, files_rx) = channel::channel::<Vec<FileEntry>>();
+    let (src_tx, src_rx) = channel::channel::<(String, Vec<DesktopEntry>)>();
     let text = Text::new(&bar.font, 17.0);
     let mut launcher = Launcher {
         registry_state: RegistryState::new(&globals),
@@ -329,7 +346,15 @@ fn main() -> Result<()> {
         hover: None,
         started: None,
         files_tx,
+        sources,
+        src_tx,
+        dynamic: Vec::new(),
+        asked: String::new(),
+        base_len,
         radius: bar.radius.clamp(6, 30) as f32,
+        row_h: config.launcher.row_height.clamp(32, 72) as i32,
+        max_rows: config.launcher.rows.clamp(3, 14),
+        icon: config.launcher.icon_size.clamp(16, 64) as i32,
         border_w: bar.border_width.clamp(0, 6).max(1) as f32,
         border: vesper_config::theme::hex(&bar.border_color),
         border_blend: bar.border_blend,
@@ -343,6 +368,17 @@ fn main() -> Result<()> {
     WaylandSource::new(conn, event_queue).insert(handle.clone()).map_err(|e| anyhow!("{e}"))?;
     // Remember the loop handle for key-repeat; the keyboard is created once the seat reports it.
     KEY_LOOP.with(|k| *k.borrow_mut() = Some(handle.clone()));
+    // Answers from plugin search providers arrive from their threads.
+    handle
+        .insert_source(src_rx, |event, _, l: &mut Launcher| {
+            if let channel::Event::Msg((query, found)) = event {
+                if l.mode == Mode::Apps && query == l.query.trim() {
+                    l.dynamic.extend(found);
+                    l.refilter();
+                }
+            }
+        })
+        .map_err(|e| anyhow!("{e}"))?;
     // The file index arrives from its thread.
     handle
         .insert_source(files_rx, |event, _, l: &mut Launcher| {
@@ -445,11 +481,60 @@ impl Launcher {
         }
     }
 
+    /// Ask the plugin search providers about the typed text (once per text), each in its own thread.
+    fn ask_sources(&mut self) {
+        let q = self.query.trim().to_string();
+        if q == self.asked {
+            return;
+        }
+        self.asked = q.clone();
+        self.dynamic.clear();
+        if q.is_empty() {
+            return;
+        }
+        for (dir, src, id) in self.sources.clone() {
+            let text = if src.prefix.is_empty() {
+                q.clone()
+            } else {
+                match q.strip_prefix(src.prefix.as_str()) {
+                    Some(rest) if rest.is_empty() || rest.starts_with(' ') => rest.trim().to_string(),
+                    _ => continue,
+                }
+            };
+            let (tx, q) = (self.src_tx.clone(), q.clone());
+            std::thread::spawn(move || {
+                let out = std::process::Command::new("sh")
+                    .arg("-c")
+                    .arg(vesper_config::plugins::shell_in(&dir, &src.command))
+                    .env("VESPER_PLUGIN_ID", &id)
+                    .env("VESPER_PLUGIN_DIR", &dir)
+                    .env("VESPER_QUERY", &text)
+                    .stdin(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .output();
+                let Ok(out) = out else { return };
+                let found: Vec<DesktopEntry> = String::from_utf8_lossy(&out.stdout).lines().take(20).enumerate().filter_map(|(n, line)| parse_source_line(&dir, &id, n, line)).collect();
+                if !found.is_empty() {
+                    let _ = tx.send((q, found));
+                }
+            });
+        }
+    }
+
     fn refilter(&mut self) {
         let q = self.query.trim().to_lowercase();
         match self.mode {
             Mode::Apps => {
+                self.apps.truncate(self.base_len);
                 let mut r = search::rank(&self.apps, &self.query);
+                self.ask_sources();
+                // what plugin providers answered goes first
+                let mut extra: Vec<usize> = Vec::new();
+                for e in &self.dynamic {
+                    extra.push(self.apps.len());
+                    self.apps.push(e.clone());
+                }
+                r.splice(0..0, extra);
                 // browsing: pinned first, then what you used lately, the rest alphabetical
                 if q.is_empty() {
                     r.sort_by_key(|&i| {
@@ -528,13 +613,13 @@ impl Launcher {
         if self.mode == Mode::Emoji {
             return 0; // drawn as a grid
         }
-        self.count().saturating_sub(self.scroll).min(MAX_ROWS)
+        self.count().saturating_sub(self.scroll).min(self.max_rows)
     }
 
     /// Resize the surface to fit the result list.
     fn resize(&mut self) {
-        let rows = self.count().min(MAX_ROWS).max(1) as i32;
-        let body = if self.mode == Mode::Emoji { EMOJI_ROWS as i32 * CELL + 26 } else { rows * ROW_H };
+        let rows = self.count().min(self.max_rows).max(1) as i32;
+        let body = if self.mode == Mode::Emoji { EMOJI_ROWS as i32 * CELL + 26 } else { rows * self.row_h };
         let h = (PAD + INPUT_H + PAD / 2 + CHIP_H + PAD / 2 + body + PAD) as u32;
         if h != self.height || !self.configured {
             self.height = h;
@@ -579,7 +664,7 @@ impl Launcher {
         self.refilter();
         if let Some(p) = sel_app.and_then(|a| self.results.iter().position(|&i| i == a)) {
             self.selected = p;
-            self.scroll = scroll.min(self.results.len().saturating_sub(MAX_ROWS));
+            self.scroll = scroll.min(self.results.len().saturating_sub(self.max_rows));
             self.ensure_visible();
         }
         self.redraw();
@@ -597,8 +682,8 @@ impl Launcher {
         }
         if self.selected < self.scroll {
             self.scroll = self.selected;
-        } else if self.selected >= self.scroll + MAX_ROWS {
-            self.scroll = self.selected + 1 - MAX_ROWS;
+        } else if self.selected >= self.scroll + self.max_rows {
+            self.scroll = self.selected + 1 - self.max_rows;
         }
     }
 
@@ -746,7 +831,7 @@ impl Launcher {
     fn icon_for(&mut self, i: usize) -> Option<Image> {
         if self.icon_cache[i].is_none() {
             let name = self.apps[i].icon.clone();
-            self.icon_cache[i] = self.icons.get(&name, ICON);
+            self.icon_cache[i] = self.icons.get(&name, self.icon);
         }
         self.icon_cache[i].clone()
     }
@@ -880,21 +965,21 @@ impl Launcher {
                 Mode::Clipboard if self.query.trim().is_empty() => "Nothing copied yet",
                 Mode::Clipboard => "No matching entries",
             };
-            self.small.draw_centered(&mut c, w as i32 / 2, top + ROW_H / 2, &self.small.fit(msg, w as i32 - 2 * PAD), p.on_surface_variant);
+            self.small.draw_centered(&mut c, w as i32 / 2, top + self.row_h / 2, &self.small.fit(msg, w as i32 - 2 * PAD), p.on_surface_variant);
         }
         let home = std::env::var("HOME").unwrap_or_default();
         for row in 0..rows {
             let idx = first + row;
-            let y = top + row as i32 * ROW_H;
+            let y = top + row as i32 * self.row_h;
             let selected = idx == self.selected;
-            let rr = (PAD, y, w as i32 - 2 * PAD, ROW_H - 2);
+            let rr = (PAD, y, w as i32 - 2 * PAD, self.row_h - 2);
             if selected {
                 c.rounded_rect(rr.0, rr.1, rr.2, rr.3, (self.radius - 4.0).max(8.0), with_alpha(accent, 0.28));
             }
             hits.push((rr, Hit::Row(idx)));
-            let iy = y + (ROW_H - 2 - ICON) / 2;
-            let ymid = y + (ROW_H - 2) / 2;
-            let text_x = PAD + 12 + ICON + 12;
+            let iy = y + (self.row_h - 2 - self.icon) / 2;
+            let ymid = y + (self.row_h - 2) / 2;
+            let text_x = PAD + 12 + self.icon + 12;
             match self.mode {
                 Mode::Emoji => {}
                 Mode::Apps => {
@@ -903,13 +988,13 @@ impl Launcher {
                         Some(img) => c.image(PAD + 12, iy, img),
                         None => {
                             let name = self.apps[i].name.clone();
-                            c.rounded_rect(PAD + 12, iy, ICON, ICON, ICON as f32 * 0.24, search::tile_color(&name));
+                            c.rounded_rect(PAD + 12, iy, self.icon, self.icon, self.icon as f32 * 0.24, search::tile_color(&name));
                             let initial: String = name.chars().next().map(|ch| ch.to_uppercase().collect()).unwrap_or_default();
-                            self.small.draw_centered(&mut c, PAD + 12 + ICON / 2, iy + ICON / 2, &initial, TILE_TEXT);
+                            self.small.draw_centered(&mut c, PAD + 12 + self.icon / 2, iy + self.icon / 2, &initial, TILE_TEXT);
                         }
                     }
                     // the star: filled when pinned, a faint outline on the selected row to show it can be pinned
-                    let star = (w as i32 - PAD - 40, y + 4, 34, ROW_H - 10);
+                    let star = (w as i32 - PAD - 40, y + 4, 34, self.row_h - 10);
                     let pinned = self.pinned.contains(&self.apps[i].id);
                     let star_hot = self.hover == Some(Hit::Pin(idx));
                     if pinned || selected || star_hot {
@@ -918,23 +1003,23 @@ impl Launcher {
                         self.text.draw_centered(&mut c, star.0 + star.2 / 2, ymid, glyph, col);
                     }
                     hits.push((star, Hit::Pin(idx)));
-                    let name = self.text.fit(&self.apps[i].name, w as i32 - 2 * PAD - 12 - ICON - 24 - 40);
+                    let name = self.text.fit(&self.apps[i].name, w as i32 - 2 * PAD - 12 - self.icon - 24 - 40);
                     self.text.draw(&mut c, text_x, ymid, &name, p.on_surface);
                 }
                 Mode::Files => {
                     let f = &self.files[self.file_results[idx]];
                     let glyph = if f.dir { "\u{f024b}" } else { "\u{f0214}" };
-                    self.text.draw_centered(&mut c, PAD + 12 + ICON / 2, ymid, glyph, accent);
+                    self.text.draw_centered(&mut c, PAD + 12 + self.icon / 2, ymid, glyph, accent);
                     let path = f.path.strip_prefix(&home).map(|r| format!("~{r}")).unwrap_or_else(|| f.path.clone());
                     let (dir, name) = path.rsplit_once('/').map_or(("", path.as_str()), |(d, n)| (d, n));
-                    let avail = w as i32 - 2 * PAD - 12 - ICON - 24 - 10;
+                    let avail = w as i32 - 2 * PAD - 12 - self.icon - 24 - 10;
                     self.text.draw(&mut c, text_x, ymid - 8, &self.text.fit(name, avail), p.on_surface);
                     self.small.draw(&mut c, text_x, ymid + 11, &self.small.fit(dir, avail), p.on_surface_variant);
                 }
                 Mode::Clipboard => {
                     let text = &self.clips[self.clip_results[idx]];
-                    self.text.draw_centered(&mut c, PAD + 12 + ICON / 2, ymid, "\u{f0ea}", accent);
-                    let avail = w as i32 - 2 * PAD - 12 - ICON - 24 - 10;
+                    self.text.draw_centered(&mut c, PAD + 12 + self.icon / 2, ymid, "\u{f0ea}", accent);
+                    let avail = w as i32 - 2 * PAD - 12 - self.icon - 24 - 10;
                     let first = text.lines().next().unwrap_or("");
                     let extra = text.lines().count().saturating_sub(1);
                     self.text.draw(&mut c, text_x, ymid - if extra > 0 { 8 } else { 0 }, &self.text.fit(first, avail), p.on_surface);
@@ -945,16 +1030,16 @@ impl Launcher {
                 Mode::Run => {
                     let cmd = &self.cmds[idx];
                     if let Some(answer) = cmd.strip_prefix('\u{1}') {
-                        self.text.draw_centered(&mut c, PAD + 12 + ICON / 2, ymid, "\u{f00ec}", accent);
-                        let avail = w as i32 - 2 * PAD - 12 - ICON - 24 - 10;
+                        self.text.draw_centered(&mut c, PAD + 12 + self.icon / 2, ymid, "\u{f00ec}", accent);
+                        let avail = w as i32 - 2 * PAD - 12 - self.icon - 24 - 10;
                         self.text.draw(&mut c, text_x, ymid, &self.text.fit(&format!("= {answer}"), avail), p.on_surface);
                         let hint = "Enter copies";
                         self.small.draw(&mut c, w as i32 - PAD - 12 - self.small.width(hint), ymid, hint, p.on_surface_variant);
                         continue;
                     }
                     let typed = idx == 0 && cmd.as_str() == self.query.trim();
-                    self.text.draw_centered(&mut c, PAD + 12 + ICON / 2, ymid, if typed { "\u{f040a}" } else { "\u{f02da}" }, accent);
-                    let avail = w as i32 - 2 * PAD - 12 - ICON - 24 - 10;
+                    self.text.draw_centered(&mut c, PAD + 12 + self.icon / 2, ymid, if typed { "\u{f040a}" } else { "\u{f02da}" }, accent);
+                    let avail = w as i32 - 2 * PAD - 12 - self.icon - 24 - 10;
                     let label = if typed { format!("Run  {cmd}") } else { cmd.clone() };
                     self.text.draw(&mut c, text_x, ymid, &self.text.fit(&label, avail), p.on_surface);
                 }
@@ -1044,7 +1129,7 @@ impl PointerHandler for Launcher {
                 }
                 PointerEventKind::Axis { vertical, .. } => {
                     let d = if vertical.discrete != 0 { vertical.discrete.signum() as isize } else if vertical.absolute > 0.0 { 1 } else if vertical.absolute < 0.0 { -1 } else { 0 };
-                    let max = if self.mode == Mode::Emoji { self.count().div_ceil(self.grid_cols()).saturating_sub(EMOJI_ROWS) } else { self.count().saturating_sub(MAX_ROWS) };
+                    let max = if self.mode == Mode::Emoji { self.count().div_ceil(self.grid_cols()).saturating_sub(EMOJI_ROWS) } else { self.count().saturating_sub(self.max_rows) };
                     let s = (self.scroll as isize + d * 2).clamp(0, max as isize) as usize;
                     if s != self.scroll {
                         self.scroll = s;
@@ -1168,5 +1253,34 @@ fn send_to_compositor(cmd: vesper_ipc::Command) {
             let _ = sock.flush();
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
+    }
+}
+
+/// One line of a plugin search provider: `title`, `title|description` or `title|description|command`.
+fn parse_source_line(dir: &std::path::Path, plugin: &str, n: usize, line: &str) -> Option<DesktopEntry> {
+    let mut parts = line.splitn(3, '|');
+    let title = parts.next()?.trim();
+    if title.is_empty() {
+        return None;
+    }
+    let desc = parts.next().unwrap_or("").trim();
+    let command = parts.next().map(str::trim).filter(|c| !c.is_empty()).unwrap_or(title);
+    let script = vesper_config::plugins::shell_in(dir, command).replace('\'', "'\\''");
+    let name = if desc.is_empty() { title.to_string() } else { format!("{title} \u{2013} {desc}") };
+    Some(DesktopEntry { id: format!("plugin-result-{plugin}-{n}"), name, exec: format!("sh -c '{script}'"), categories: vec!["Plugin".into()], ..Default::default() })
+}
+
+#[cfg(test)]
+mod source_tests {
+    use super::*;
+
+    #[test]
+    fn source_lines() {
+        let d = std::path::Path::new("/tmp");
+        let e = parse_source_line(d, "p", 0, "Title|about|echo hi").unwrap();
+        assert_eq!(e.name, "Title \u{2013} about");
+        assert!(e.exec.contains("echo hi"));
+        assert!(parse_source_line(d, "p", 1, " |x").is_none());
+        assert!(parse_source_line(d, "p", 2, "Only a title").unwrap().exec.contains("Only a title"));
     }
 }

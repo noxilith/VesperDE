@@ -128,7 +128,7 @@ enabled  = true      # frosted-glass background behind listed windows
 strength   = 30        # 1 (light) .. 100 (heavy)
 brightness = 100       # percent; below 100 darkens the blurred background
 saturation = 100       # percent; 0 = grey
-apps     = []        # application ids, e.g. ["kitty"]; Mod+B adds the focused window's app
+apps     = ["foot"]  # application ids, e.g. ["foot", "kitty"]; Mod+B adds the focused window's app
 
 [animations]
 enabled     = true
@@ -177,3 +177,9 @@ do_not_disturb  = false
 # width     = 700             # floating size in pixels (0 = the usual size)
 # height    = 500
 # workspace = 0               # 1..10 opens it there without switching; 0 = the current workspace
+
+# Your own colours (replace the wallpaper's everywhere); roles: primary, on_primary, surface, surface_container,
+# surface_container_high, surface_container_highest, on_surface, on_surface_variant, outline, outline_variant,
+# primary_container, on_primary_container, secondary, tertiary, error, scrim. Or use Settings > Background & colours.
+# [colors]
+# primary = "#8b7bff"

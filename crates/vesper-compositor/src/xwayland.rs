@@ -263,7 +263,7 @@ impl XwmHandler for Vesper {
         }
         tracing::info!("new X11 window {:?} (class {:?})", window.title(), window.class());
         let win = Window::new_x11_window(window.clone());
-        self.layout.add_window(win.clone());
+        self.add_window_here(win.clone());
         if let (Some(size), Some(out)) = (float_size(&window), self.output_geometry()) {
             let size: Size<i32, Logical> = (size.w.min(out.size.w), size.h.min(out.size.h)).into();
             let loc = (out.loc.x + (out.size.w - size.w) / 2, out.loc.y + (out.size.h - size.h) / 2);

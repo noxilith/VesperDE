@@ -37,6 +37,12 @@ pub struct Workspace {
     pub floating: Vec<(Window, Rectangle<i32, Logical>)>,
     /// The topmost floating window has the focus (instead of the focused column).
     pub float_focus: bool,
+    /// Floating mode (Mod+V): every window of this workspace floats, new ones too.
+    pub float_mode: bool,
+    /// The windows the mode floated (and not the ones you floated yourself): they tile again when the mode goes off.
+    pub float_forced: Vec<Window>,
+    /// Where the mode's windows floated when it last went off (even if that is off screen): they go back there when it is turned on again.
+    pub float_saved: Vec<(Window, Rectangle<i32, Logical>)>,
 }
 
 pub struct Layout {
@@ -476,6 +482,54 @@ impl Layout {
             }
         } else if let Some(window) = ws.columns.get(ws.focused).cloned() {
             self.float_window(&window, rect);
+        }
+    }
+
+    /// Float `window` because its workspace is in floating mode (it tiles again when the mode goes off).
+    pub fn float_by_mode(&mut self, window: &Window, rect: Rectangle<i32, Logical>) {
+        self.float_window(window, rect);
+        if let Some(ws) = self.workspaces.iter_mut().find(|ws| ws.floating.iter().any(|(w, _)| w == window)) {
+            ws.float_forced.push(window.clone());
+        }
+    }
+
+    /// Turn floating mode on or off for the active workspace. On: every tiled window floats where `rect_of(window, index)` says.
+    /// Off: the windows the mode floated go back into columns. Returns the new state.
+    pub fn toggle_float_workspace(&mut self, mut rect_of: impl FnMut(&Window, usize) -> Rectangle<i32, Logical>) -> bool {
+        if self.ws().float_mode {
+            let forced = std::mem::take(&mut self.ws_mut().float_forced);
+            self.ws_mut().float_mode = false;
+            for w in forced {
+                let ws = self.ws_mut();
+                if let Some(i) = ws.floating.iter().position(|(x, _)| *x == w) {
+                    let (_, rect) = ws.floating.remove(i);
+                    // remember the place, so turning the mode on again brings the window back to it
+                    ws.float_saved.retain(|(x, _)| *x != w);
+                    ws.float_saved.push((w.clone(), rect));
+                    if ws.floating.is_empty() {
+                        ws.float_focus = false;
+                    }
+                    self.add_window(w);
+                }
+            }
+            false
+        } else {
+            self.ws_mut().float_mode = true;
+            // the focused window floats last, so it ends up on top; `rect_of` gets each window's place in that order
+            let mut wins: Vec<Window> = self.ws().columns.clone();
+            if let Some(f) = wins.get(self.ws().focused).cloned() {
+                wins.retain(|w| *w != f);
+                wins.push(f);
+            }
+            // windows that closed meanwhile are forgotten
+            let alive = wins.clone();
+            self.ws_mut().float_saved.retain(|(x, _)| alive.contains(x));
+            for (i, w) in wins.iter().enumerate() {
+                let saved = self.ws().float_saved.iter().find(|(x, _)| x == w).map(|(_, r)| *r);
+                let r = saved.unwrap_or_else(|| rect_of(w, i));
+                self.float_by_mode(w, r);
+            }
+            true
         }
     }
 

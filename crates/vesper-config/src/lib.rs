@@ -3,6 +3,7 @@
 //! Lookup order: `$VESPER_CONFIG`, `$XDG_CONFIG_HOME/vesper/config.toml`,
 //! `/etc/vesper/config.toml`, then built-in defaults. Every field is optional.
 
+pub mod keys;
 pub mod plugins;
 pub mod profiles;
 
@@ -41,6 +42,12 @@ pub struct Config {
     pub rules: Vec<WindowRule>,
     /// Plugins you have switched on (see `plugins` and Settings > Plugins).
     pub plugins: Plugins,
+    /// Keyboard shortcuts you changed, `id = "Mod+Shift+Q"` (see `vesper_config::keys::BINDS` for the ids). Missing = default.
+    pub keys: std::collections::BTreeMap<String, String>,
+    /// Colours that replace the wallpaper-derived ones: `primary = "#8b7bff"`. Roles: surface, surface_container, surface_container_high,
+    /// surface_container_highest, on_surface, on_surface_variant, outline, outline_variant, primary, on_primary, primary_container,
+    /// on_primary_container, secondary, tertiary, error, scrim. Empty or missing = from the wallpaper.
+    pub colors: std::collections::BTreeMap<String, String>,
 }
 
 /// Which plugins are switched on.
@@ -188,6 +195,8 @@ pub struct Bar {
     pub osd: bool,
     /// Size of the bar's icons (battery, wifi, volume, bell, power, brightness, system, tray) in pixels.
     pub item_icon_size: u32,
+    /// Show the bar on every monitor (each extra monitor gets its own copy of the bar).
+    pub all_monitors: bool,
 }
 
 impl Default for Shell {
@@ -198,7 +207,7 @@ impl Default for Shell {
 
 impl Default for Bar {
     fn default() -> Self {
-        Self { height: 32, font: "JetBrainsMono Nerd Font".into(), font_size: 14.0, icon_size: 0, style: "fill".into(), border_width: 1, border_color: String::new(), border_blend: false, workspace_style: "dots".into(), workspace_color: String::new(), workspace_mode: "all".into(), splits: Vec::new(), split_style: "line".into(), split_width: 2, split_height: 55, split_color: String::new(), split_spacing: 10, status_icons: "ios".into(), system_icon: "auto".into(), system_icon_size: 0, system_icon_accent: false, system_icon_color: String::new(), workspace_inactive_color: String::new(), workspace_inactive_border: false, radius: 14, margin_top: 8, margin_side: 12, notch_width: 560, opacity: 100, blur: false, blur_strength: 30, right_items: ["mic", "drives", "volume", "network", "battery", "clock", "bell"].iter().map(|s| s.to_string()).collect(), left_items: ["system", "workspaces"].iter().map(|s| s.to_string()).collect(), middle_items: vec!["minimized".to_string()], clock_24h: true, clock_seconds: false, clock_date: true, show_title: false, osd: true, item_icon_size: 20 }
+        Self { height: 32, font: "JetBrainsMono Nerd Font".into(), font_size: 14.0, icon_size: 0, style: "fill".into(), border_width: 1, border_color: String::new(), border_blend: false, workspace_style: "dots".into(), workspace_color: String::new(), workspace_mode: "all".into(), splits: Vec::new(), split_style: "line".into(), split_width: 2, split_height: 55, split_color: String::new(), split_spacing: 10, status_icons: "ios".into(), system_icon: "auto".into(), system_icon_size: 0, system_icon_accent: false, system_icon_color: String::new(), workspace_inactive_color: String::new(), workspace_inactive_border: false, radius: 14, margin_top: 8, margin_side: 12, notch_width: 560, opacity: 100, blur: false, blur_strength: 30, right_items: ["mic", "drives", "volume", "network", "battery", "clock", "bell"].iter().map(|s| s.to_string()).collect(), left_items: ["system", "workspaces"].iter().map(|s| s.to_string()).collect(), middle_items: vec!["minimized".to_string()], clock_24h: true, clock_seconds: false, clock_date: true, show_title: false, osd: true, item_icon_size: 20, all_monitors: true }
     }
 }
 
@@ -412,6 +421,8 @@ impl Default for Config {
             launcher: Launcher::default(),
             rules: Vec::new(),
             plugins: Plugins::default(),
+            keys: Default::default(),
+            colors: Default::default(),
         }
     }
 }
@@ -460,7 +471,7 @@ impl Config {
     pub fn load() -> Self {
         for path in Self::candidate_paths() {
             let Ok(text) = std::fs::read_to_string(&path) else { continue };
-            return match toml::from_str::<Config>(&text) {
+            return match Self::build(&text) {
                 Ok(mut cfg) => {
                     tracing::info!("loaded config from {}", path.display());
                     cfg.sanitize();
@@ -473,6 +484,34 @@ impl Config {
             };
         }
         Config::default()
+    }
+
+    /// Parse a config file's text, with the settings of enabled plugins (`style` in `plugin.toml`) under it: the file wins.
+    fn build(text: &str) -> Result<Config, String> {
+        let user: toml::Table = text.parse().map_err(|e: toml::de::Error| e.to_string())?;
+        let enabled: Vec<String> = user
+            .get("plugins")
+            .and_then(|p| p.get("enabled"))
+            .and_then(|e| e.as_array())
+            .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .unwrap_or_default();
+        let mut merged = toml::Table::new();
+        if !enabled.is_empty() {
+            for (id, layer) in plugins::style_layers(&enabled) {
+                let mut trial = merged.clone();
+                plugins::deep_merge(&mut trial, &layer);
+                // a style that does not fit the settings is left out, rather than breaking the whole config
+                let mut full = trial.clone();
+                plugins::deep_merge(&mut full, &user);
+                if toml::Value::Table(full).try_into::<Config>().is_ok() {
+                    merged = trial;
+                } else {
+                    tracing::warn!("plugin {id}: its style file has settings Vesper does not know; ignored");
+                }
+            }
+        }
+        plugins::deep_merge(&mut merged, &user);
+        toml::Value::Table(merged).try_into::<Config>().map_err(|e| e.to_string())
     }
 
     /// The terminal command to run, resolving the empty default against $PATH.
@@ -644,6 +683,8 @@ pub struct OutputConfig {
     /// Position of the top-left corner in logical pixels; both left out = placed to the right of the previous monitor.
     pub x: Option<i32>,
     pub y: Option<i32>,
+    /// Orientation: `"normal"`, `"90"`, `"180"` or `"270"` (degrees, counter-clockwise; use `"90"` or `"270"` for a monitor stood upright). Empty = normal.
+    pub transform: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -727,6 +768,14 @@ pub struct Notifications {
     /// The hour (0-23) the schedule starts, and the hour it ends (it may run past midnight).
     pub dnd_from: u32,
     pub dnd_to: u32,
+    /// Where popups appear: "top-right", "top-left", "bottom-right" or "bottom-left".
+    pub position: String,
+    /// Width of a popup in pixels (260 to 640).
+    pub width: u32,
+    /// Gap between popups and the screen edge in pixels.
+    pub margin: u32,
+    /// How many popups show at once (1 to 10).
+    pub max_visible: usize,
 }
 
 impl Notifications {
@@ -742,7 +791,7 @@ impl Notifications {
 
 impl Default for Notifications {
     fn default() -> Self {
-        Self { history_max: 100, default_timeout: 6, do_not_disturb: false, dnd_schedule: false, dnd_from: 22, dnd_to: 7 }
+        Self { history_max: 100, default_timeout: 6, do_not_disturb: false, dnd_schedule: false, dnd_from: 22, dnd_to: 7, position: "top-right".into(), width: 360, margin: 12, max_visible: 5 }
     }
 }
 
@@ -756,11 +805,19 @@ pub struct Launcher {
     pub gap: u32,
     /// Width in pixels.
     pub width: u32,
+    /// Where it opens: "top" (under the bar) or "center" (middle of the screen).
+    pub position: String,
+    /// How many results show at once (3 to 14).
+    pub rows: usize,
+    /// Height of one result row in pixels (32 to 72).
+    pub row_height: u32,
+    /// Size of the app icons in pixels (16 to 64).
+    pub icon_size: u32,
 }
 
 impl Default for Launcher {
     fn default() -> Self {
-        Self { pinned: Vec::new(), gap: 12, width: 620 }
+        Self { pinned: Vec::new(), gap: 12, width: 620, position: "top".into(), rows: 8, row_height: 44, icon_size: 28 }
     }
 }
 
@@ -958,7 +1015,7 @@ pub struct Blur {
 
 impl Default for Blur {
     fn default() -> Self {
-        Self { enabled: true, strength: 30, brightness: 100, saturation: 100, apps: Vec::new() }
+        Self { enabled: true, strength: 30, brightness: 100, saturation: 100, apps: vec!["foot".into()] }
     }
 }
 

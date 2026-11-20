@@ -104,7 +104,7 @@ pub struct ThemeSettings {
 
 impl Default for ThemeSettings {
     fn default() -> Self {
-        Self { enabled: true, mode: "dark".into(), scheme: SCHEMES[0].into(), contrast: 0.0, prefer: "saturation".into(), binary: "matugen".into(), kitty: true, foot: true, shell: true, fetch: true, file_manager: true }
+        Self { enabled: true, mode: "dark".into(), scheme: "scheme-smart".into(), contrast: 0.0, prefer: "saturation".into(), binary: "matugen".into(), kitty: true, foot: true, shell: true, fetch: true, file_manager: true }
     }
 }
 
@@ -402,6 +402,21 @@ impl Palette {
 
     /// The palette matugen last generated, falling back to the default for anything missing.
     pub fn load() -> Self {
+        let mut p = Palette::from_file();
+        // colours the user set in `[colors]` win over the wallpaper
+        let mine = crate::Config::load().colors;
+        macro_rules! over {
+            ($($f:ident),*) => { $( if let Some(c) = mine.get(stringify!($f)).and_then(|s| hex(s)) { p.$f = c; } )* };
+        }
+        over!(
+            surface, surface_container, surface_container_high, surface_container_highest, on_surface, on_surface_variant,
+            outline, outline_variant, primary, on_primary, primary_container, on_primary_container, secondary, tertiary,
+            error, scrim
+        );
+        p
+    }
+
+    fn from_file() -> Self {
         let mut p = Palette::default();
         let Ok(text) = std::fs::read_to_string(colors_file()) else { return p };
         let Ok(t) = text.parse::<toml::Table>() else { return p };
@@ -630,4 +645,16 @@ pub fn apply_app_links(settings: &ThemeSettings) {
         let _ = std::fs::remove_file(fetch_colors_file());
     }
     set_file_manager_theme(settings.file_manager && settings.enabled);
+}
+
+/// Make every running component re-read its colours (they watch the modification time of the colours file): call after
+/// changing `[colors]`.
+pub fn touch_colors() {
+    let path = colors_file();
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    if let Ok(f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        let _ = f.set_modified(std::time::SystemTime::now());
+    }
 }

@@ -150,12 +150,12 @@ impl Dispatch<ZwlrScreencopyManagerV1, ()> for Vesper {
             frame.failed();
             return;
         };
-        let Some(mode) = out.current_mode() else {
+        let Some(size) = crate::outputs::upright_size(&out) else {
             let frame = data_init.init(frame, FrameData { output: out, rect: Rectangle::default(), cursor, used: Mutex::new(true) });
             frame.failed();
             return;
         };
-        let full = Rectangle::<i32, Physical>::from_size(mode.size);
+        let full = Rectangle::<i32, Physical>::from_size(size);
         let scale = out.current_scale().fractional_scale();
         // a region is in logical pixels of the output; the buffer is in output pixels
         let rect = match region {

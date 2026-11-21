@@ -454,6 +454,7 @@ impl Vesper {
             }
         }
         self.layout.focus_output(&focused);
+        self.layout.publish_owners();
     }
 
     /// Tile the active workspace of the monitor `output` (which is the focused layout while this runs).
@@ -464,7 +465,14 @@ impl Vesper {
         geo.loc += out_geo.loc;
         let gap = self.config.layout.gap;
         let default_ratio = self.config.layout.column_width;
-        let height = layout::column_height(geo.size.h, gap);
+        // A portrait monitor (taller than wide) lays its strip out top to bottom instead of left to right: the strip is
+        // computed as for a landscape screen and then turned a quarter (what is a column here is a row there).
+        let portrait = out_geo.size.h > out_geo.size.w;
+        let vgeo = if portrait { Rectangle::<i32, Logical>::new((0, 0).into(), (geo.size.h, geo.size.w).into()) } else { geo };
+        let to_real = |x: i32, y: i32, w: i32, h: i32| -> (Point<i32, Logical>, i32, i32) {
+            if portrait { ((geo.loc.x + y, geo.loc.y + x).into(), h, w) } else { ((x, y).into(), w, h) }
+        };
+        let height = layout::column_height(vgeo.size.h, gap);
 
         for (_, w) in &self.layout.minimized {
             self.space.unmap_elem(w);
@@ -500,18 +508,18 @@ impl Vesper {
             .iter()
             .map(|(s, _)| {
                 let r = ws.ratios[*s];
-                layout::column_width(geo.size.w, gap, if r == 0.0 { default_ratio } else { r })
+                layout::column_width(vgeo.size.w, gap, if r == 0.0 { default_ratio } else { r })
             })
             .collect();
         let focused_col = ranges.iter().position(|(s, e)| (*s..=*e).contains(&ws.focused)).unwrap_or(0);
         let resizing = self.drag.as_ref().filter(|d| d.tiled && d.resize && ws.columns.contains(&d.window)).map(|d| (d.window.clone(), d.rect.size.w, d.left, d.base_shift));
         if resizing.is_none() {
-            ws.scroll = layout::solve_scroll(&widths, focused_col, ws.scroll, geo.size.w, gap);
+            ws.scroll = layout::solve_scroll(&widths, focused_col, ws.scroll, vgeo.size.w, gap);
         }
         let mut tiles = Vec::new();
         // a strip narrower than the screen can sit left, centred or right
         let strip = widths.iter().sum::<i32>() + gap * (widths.len() as i32 + 1);
-        let spare = (geo.size.w - strip).max(0);
+        let spare = (vgeo.size.w - strip).max(0);
         let shift = match ws.align {
             layout::Align::Left => 0,
             layout::Align::Right => spare,
@@ -530,17 +538,18 @@ impl Vesper {
             self.last_shift = if resizing.is_some() { self.last_shift } else { shift };
         }
         for (ci, (s, e)) in ranges.iter().enumerate() {
-            let x = geo.loc.x + layout::column_x(&widths, ci, gap) - ws.scroll + shift;
+            let x = vgeo.loc.x + layout::column_x(&widths, ci, gap) - ws.scroll + shift;
             // windows in a column share its height by weight, with a gap between them
             let n = (e - s + 1) as i32;
             let avail = (height - (n - 1) * gap).max(50 * n);
             let total: f64 = ws.weights[*s..=*e].iter().sum::<f64>().max(0.0001);
-            let mut y = geo.loc.y + gap;
+            let mut y = vgeo.loc.y + gap;
             for (k, i) in (*s..=*e).enumerate() {
-                let h = if i == *e { geo.loc.y + gap + height - y } else { ((avail as f64) * ws.weights[i] / total).round() as i32 }.max(50);
+                let h = if i == *e { vgeo.loc.y + gap + height - y } else { ((avail as f64) * ws.weights[i] / total).round() as i32 }.max(50);
                 let _ = k;
-                configure(&ws.columns[i], (x, y).into(), widths[ci], h, WinMode::Tiled);
-                tiles.push((ws.columns[i].clone(), Point::from((x, y))));
+                let (at, rw, rh) = to_real(x, y, widths[ci], h);
+                configure(&ws.columns[i], at, rw, rh, WinMode::Tiled);
+                tiles.push((ws.columns[i].clone(), at));
                 y += h + gap;
             }
         }

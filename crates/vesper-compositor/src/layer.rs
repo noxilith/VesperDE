@@ -149,12 +149,32 @@ impl Vesper {
 
         from_layers(&[Layer::Overlay, Layer::Top])
             .or_else(|| {
-                self.space.element_under(pos).and_then(|(window, loc)| {
+                self.window_under(pos).and_then(|(window, loc)| {
                     window
                         .surface_under(pos - loc.to_f64(), WindowSurfaceType::ALL)
                         .map(|(s, p)| (s, (p + loc).to_f64()))
                 })
             })
             .or_else(|| from_layers(&[Layer::Bottom, Layer::Background]))
+    }
+}
+
+impl Vesper {
+    /// The topmost window under `pos` that belongs to the monitor `pos` is on, with its render location. (A window that
+    /// scrolled off the edge of one monitor overlaps the next one in the shared coordinate space but is not shown there,
+    /// so it must not catch the pointer there either.)
+    pub fn window_under(&self, pos: Point<f64, Logical>) -> Option<(smithay::desktop::Window, Point<i32, Logical>)> {
+        let out = self.space.outputs().find(|o| self.space.output_geometry(o).is_some_and(|g| g.to_f64().contains(pos))).map(|o| o.name());
+        let ok = |w: &smithay::desktop::Window| out.as_ref().is_none_or(|n| crate::layout::on_output(w, n));
+        if let Some((w, loc)) = self.space.element_under(pos).filter(|(w, _)| ok(w)) {
+            return Some((w.clone(), loc));
+        }
+        self.space.elements().rev().find_map(|w| {
+            if !ok(w) {
+                return None;
+            }
+            let loc = self.space.element_location(w)? - w.geometry().loc;
+            smithay::desktop::space::SpaceElement::is_in_input_region(w, &(pos - loc.to_f64())).then(|| (w.clone(), loc))
+        })
     }
 }

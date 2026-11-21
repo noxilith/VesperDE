@@ -213,7 +213,7 @@ impl Vesper {
             .unwrap_or_else(|| vesper_config::theme::with_alpha(pal.outline_variant, 0.8));
         let border_prog = self.round.as_ref().map(|r| r.border.clone());
 
-        let windows: Vec<Window> = self.space.elements_for_output(output).cloned().collect();
+        let windows: Vec<Window> = self.space.elements_for_output(output).filter(|w| crate::layout::on_output(w, &output.name())).cloned().collect();
         self.fx.borders.retain(|w, _| windows.contains(w));
         self.fx.pixel_borders.retain(|w, _| windows.contains(w));
         let mut out = Vec::new();
@@ -361,7 +361,7 @@ impl Vesper {
         if cfg.enabled && !cfg.apps.is_empty() {
             let fullscreen = self.fullscreen_on(output);
             let mut rects = Vec::new();
-            for w in self.space.elements_for_output(output) {
+            for w in self.space.elements_for_output(output).filter(|w| crate::layout::on_output(w, &output.name())) {
                 if fullscreen.as_ref() == Some(w) || !cfg.matches(&crate::effects::app_id(w)) {
                     continue;
                 }

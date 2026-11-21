@@ -194,7 +194,7 @@ impl Vesper {
         if on_layer {
             return;
         }
-        let Some((w, _)) = self.space.element_under(pos).map(|(w, l)| (w.clone(), l)) else { return };
+        let Some((w, _)) = self.window_under(pos) else { return };
         if crate::xwayland::is_override_redirect(&w) {
             return;
         }
@@ -535,7 +535,7 @@ impl Vesper {
             return;
         }
         if state == ButtonState::Pressed && (code == BTN_LEFT || code == BTN_RIGHT) && self.mod_held() {
-            let under = self.space.element_under(pointer.current_location()).map(|(w, _)| w.clone());
+            let under = self.window_under(pointer.current_location()).map(|(w, _)| w);
             if let Some(window) = under.filter(|w| self.layout.is_floating(w)) {
                 self.layout.focus_window(&window);
                 self.layout_changed();
@@ -545,7 +545,7 @@ impl Vesper {
                 return;
             }
             // A tiled column: Mod+left moves it (drop it between other columns), Mod+right changes its width.
-            if let Some(window) = self.space.element_under(pointer.current_location()).map(|(w, _)| w.clone()) {
+            if let Some(window) = self.window_under(pointer.current_location()).map(|(w, _)| w) {
                 if !self.layout.is_floating(&window) {
                     self.layout.focus_window(&window);
                     self.layout_changed();
@@ -563,7 +563,7 @@ impl Vesper {
             // the wallpaper changer closes itself when it loses focus, and clicking the bar should not unfocus your window.
             let on_layer = self.surface_under(pointer.current_location()).is_some_and(|(s, _)| self.is_layer_surface(&s));
             if !on_layer {
-                let under = self.space.element_under(pointer.current_location()).map(|(w, _)| w.clone());
+                let under = self.window_under(pointer.current_location()).map(|(w, _)| w);
                 match under {
                     // clicking a menu or tooltip leaves the focus where it is
                     Some(window) if crate::xwayland::is_override_redirect(&window) => {}
@@ -748,6 +748,10 @@ impl Vesper {
         use smithay::utils::{Logical, Rectangle};
         if self.other_monitor_at(pos).is_some() {
             return None; // no tiling hint over another monitor: the window moves there
+        }
+        // a portrait monitor lays its windows out top to bottom: the drop zones below assume columns left to right
+        if self.output_geometry().is_some_and(|g| g.size.h > g.size.w) {
+            return None;
         }
         let gap = self.config.layout.gap;
         let own = self.drag.as_ref().map(|d| d.rect).or_else(|| self.space.element_geometry(window))?;

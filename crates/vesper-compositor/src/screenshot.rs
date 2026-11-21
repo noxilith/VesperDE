@@ -154,7 +154,7 @@ impl Vesper {
     /// Output-local rectangles of the visible windows, topmost first, for the picker's window hover.
     pub fn freeze_windows(&self) -> Vec<[i32; 4]> {
         let (Some(out), Some(output)) = (self.capture_output().and_then(|o| self.space.output_geometry(o)), self.capture_output()) else { return Vec::new() };
-        let mut wins: Vec<_> = self.space.elements_for_output(output).cloned().collect();
+        let mut wins: Vec<_> = self.space.elements_for_output(output).filter(|w| crate::layout::on_output(w, &output.name())).cloned().collect();
         wins.reverse();
         wins.iter()
             .filter_map(|w| self.space.element_geometry(w))

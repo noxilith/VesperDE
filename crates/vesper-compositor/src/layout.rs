@@ -1088,3 +1088,31 @@ mod monitor_tests {
         assert!(!l.sync(&[], 2), "no monitors known: leave everything alone");
     }
 }
+
+// ------------------------------------------------------- which monitor shows which window
+
+thread_local! {
+    static OWNERS: std::cell::RefCell<std::collections::HashMap<Window, String>> = std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+impl Layouts {
+    /// Remember which monitor each window belongs to (called after every re-layout).
+    pub fn publish_owners(&self) {
+        OWNERS.with(|o| {
+            let mut o = o.borrow_mut();
+            o.clear();
+            for (name, l) in &self.monitors {
+                for w in l.all_windows() {
+                    o.insert(w, name.clone());
+                }
+            }
+        });
+    }
+}
+
+/// Is `window` shown on monitor `output`? A window belongs to the monitor whose workspaces hold it: a column that
+/// scrolled past the edge of its monitor must not appear on the monitor next to it, even though both share one
+/// coordinate space. Windows no monitor owns (menus and tooltips) show wherever they are.
+pub fn on_output(window: &Window, output: &str) -> bool {
+    OWNERS.with(|o| o.borrow().get(window).is_none_or(|owner| owner == output))
+}

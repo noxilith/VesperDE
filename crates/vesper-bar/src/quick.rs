@@ -79,6 +79,16 @@ fn radio_on(kind: &str) -> Option<bool> {
     (!r.is_empty()).then(|| r.iter().any(|on| *on))
 }
 
+/// Is the Bluetooth daemon running? Without it `bluetoothctl` waits for it on D-Bus until the bar gives up after two
+/// seconds, and the bar (which asks on its own thread) freezes for that long every time it looks.
+fn bluetoothd_running() -> bool {
+    let Ok(dir) = std::fs::read_dir("/proc") else { return true };
+    dir.flatten().any(|e| {
+        e.file_name().to_str().is_some_and(|n| n.bytes().all(|b| b.is_ascii_digit()))
+            && std::fs::read_to_string(e.path().join("comm")).is_ok_and(|c| c.trim() == "bluetoothd")
+    })
+}
+
 fn muted(source: &str) -> bool {
     out("wpctl", &["get-volume", source]).is_some_and(|s| s.contains("[MUTED]"))
 }
@@ -88,7 +98,7 @@ pub fn read(sys: &Sys) -> Quick {
     let radios = rfkill();
     Quick {
         wifi: out("nmcli", &["radio", "wifi"]).map(|s| s.trim() == "enabled").or_else(|| radio_on("wlan")).unwrap_or(false),
-        bluetooth: out("bluetoothctl", &["show"]).map(|s| s.contains("Powered: yes")).or_else(|| radio_on("bluetooth")).unwrap_or(false),
+        bluetooth: bluetoothd_running().then(|| out("bluetoothctl", &["show"])).flatten().map(|s| s.contains("Powered: yes")).or_else(|| radio_on("bluetooth")).unwrap_or(false),
         airplane: !radios.is_empty() && radios.iter().all(|(_, blocked)| *blocked),
         night: cfg.appearance.night_light,
         sound: sys.volume.is_none_or(|v| !v.muted),

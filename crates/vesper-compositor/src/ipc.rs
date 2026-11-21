@@ -62,11 +62,11 @@ impl Vesper {
         let id = ipc.next_id;
         ipc.next_id += 1;
         let mut writer = writer;
-        if writeln!(writer, "{json}").is_err() {
-            return;
+        // a client that already hung up (it wrote one command and left) cannot take the state, but its command is still
+        // waiting in the socket and must be read
+        if writeln!(writer, "{json}").is_ok() {
+            ipc.clients.push((id, writer));
         }
-        ipc.clients.push((id, writer));
-
         let mut buf: Vec<u8> = Vec::new();
         let reader = Arc::new(stream);
         let _ = loop_handle.insert_source(Generic::new(reader, Interest::READ, Mode::Level), move |_, stream, state| {

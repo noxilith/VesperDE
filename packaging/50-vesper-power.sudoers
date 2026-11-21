@@ -1,0 +1,8 @@
+# Vesper: let members of the wheel group power off, reboot and suspend without a password.
+#
+# Some systems (SingularitySYS among them) build systemd's logind without polkit, so a normal user cannot ask it to
+# power off: it answers "Access denied" whatever polkit rules say. Vesper's power buttons and shortcuts try `loginctl`
+# first and fall back to `sudo -n systemctl ...`, which this file allows. Remove the file to go back to asking for a
+# password (the buttons then do nothing on such systems).
+Cmnd_Alias VESPER_POWER = /usr/bin/systemctl poweroff, /usr/bin/systemctl reboot, /usr/bin/systemctl suspend
+%wheel ALL=(root) NOPASSWD: VESPER_POWER

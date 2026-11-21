@@ -32,7 +32,7 @@ use smithay_client_toolkit::{
     },
     shm::{slot::SlotPool, Shm, ShmHandler},
 };
-use vesper_config::theme::{alpha, Palette};
+use vesper_config::theme::{alpha, with_alpha, Palette};
 use vesper_gfx::{Canvas, Text};
 
 const BTN_LEFT: u32 = 0x110;
@@ -125,6 +125,9 @@ impl App {
         let send = |cmd: vesper_ipc::Command| {
             if let Ok(mut s) = UnixStream::connect(vesper_ipc::socket_path()) {
                 let _ = writeln!(s, "{}", serde_json::to_string(&cmd).unwrap_or_default());
+                let _ = s.flush();
+                // stay connected a moment so the compositor reads the command before the line closes
+                std::thread::sleep(std::time::Duration::from_millis(150));
             }
         };
         let shell = |cmd: String| {
@@ -147,7 +150,8 @@ impl App {
         let (w, h) = (self.size.0 as i32, self.size.1 as i32);
         let Ok((buffer, canvas)) = self.pool.create_buffer(w, h, w * 4, wl_shm::Format::Argb8888) else { return };
         let mut c = Canvas::new(canvas, w as u32, h as u32);
-        c.clear(alpha(self.pal.scrim, 0xb0));
+        // like the start menu and the other popouts: no dimmed screen, just the panel
+        c.clear([0, 0, 0, 0]);
         let cell = 120;
         let gap = 14;
         let n = CHOICES.len() as i32;
@@ -159,7 +163,7 @@ impl App {
         if b.border_blend {
             border[3] = (border[3] as u32 * fill as u32 / 255) as u8;
         }
-        let radius = (b.radius.clamp(8, 28) + 10) as f32;
+        let radius = b.radius.clamp(8, 28) as f32;
         c.rounded_rect(x0 - 24, y0 - 24, total + 48, cell + 48, radius, alpha(self.pal.surface, fill));
         c.rounded_outline(x0 - 24, y0 - 24, total + 48, cell + 48, radius, b.border_width.clamp(0, 6).max(1) as f32, border);
         self.cells.clear();
@@ -168,9 +172,9 @@ impl App {
             let selected = i == self.sel;
             let r = (x, y0, cell, cell);
             let danger = matches!(CHOICES[i].0, Choice::Shutdown | Choice::Restart);
-            let bg = if selected { if danger { self.pal.error } else { self.pal.primary } } else { self.pal.surface_container_high };
+            let bg = if selected { if danger { self.pal.error } else { self.pal.primary } } else { with_alpha(self.pal.on_surface, 0.08) };
             let fg = if selected { if danger { self.pal.surface } else { self.pal.on_primary } } else { self.pal.on_surface };
-            c.rounded_rect(r.0, r.1, r.2, r.3, 18.0, bg);
+            c.rounded_rect(r.0, r.1, r.2, r.3, 12.0, bg);
             self.big.draw_centered(&mut c, x + cell / 2, y0 + cell / 2 - 10, icon, fg);
             self.text.draw_centered(&mut c, x + cell / 2, y0 + cell - 26, label, fg);
             self.cells.push(r);

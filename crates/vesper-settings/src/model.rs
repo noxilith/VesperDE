@@ -390,7 +390,7 @@ fn power(snap: &Snapshot) -> Vec<Section> {
         section(
             "Commands",
             vec![
-                text(snap, "Suspend command", "Leave empty for loginctl suspend", "power.suspend_command", "loginctl suspend"),
+                text(snap, "Suspend command", "Leave empty for the default (loginctl, or sudo systemctl where logind has no polkit)", "power.suspend_command", "loginctl suspend"),
                 text(snap, "Shut down command", "Leave empty for loginctl poweroff", "power.poweroff_command", "loginctl poweroff"),
                 text(snap, "Restart command", "Leave empty for loginctl reboot", "power.reboot_command", "loginctl reboot"),
                 Row { title: "Lock now".into(), desc: "Test the lock screen".into(), ctl: Ctl::Button { label: "Lock".into(), act: Act::Lock } },

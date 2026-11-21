@@ -749,13 +749,15 @@ impl Default for Power {
 
 impl Power {
     pub fn suspend(&self) -> String {
-        or_default(&self.suspend_command, "loginctl suspend")
+        // loginctl first (polkit decides); where the system's logind has no polkit it says "Access denied", and the sudoers
+        // rule Vesper installs (packaging/50-vesper-power.sudoers) lets the wheel group do it instead
+        or_default(&self.suspend_command, "loginctl suspend || sudo -n systemctl suspend")
     }
     pub fn poweroff(&self) -> String {
-        or_default(&self.poweroff_command, "loginctl poweroff")
+        or_default(&self.poweroff_command, "loginctl poweroff || sudo -n systemctl poweroff")
     }
     pub fn reboot(&self) -> String {
-        or_default(&self.reboot_command, "loginctl reboot")
+        or_default(&self.reboot_command, "loginctl reboot || sudo -n systemctl reboot")
     }
 }
 
@@ -958,7 +960,7 @@ mod settings_tests {
         let cfg: Config = toml::from_str("").unwrap();
         assert_eq!(cfg.appearance.border_width, 2);
         assert!(cfg.animations.enabled);
-        assert_eq!(cfg.power.suspend(), "loginctl suspend");
+        assert_eq!(cfg.power.suspend(), "loginctl suspend || sudo -n systemctl suspend");
     }
 }
 

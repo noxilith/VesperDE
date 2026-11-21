@@ -61,6 +61,10 @@ pub enum Action {
     ToggleFloating,
     /// Float or tile just the focused window.
     ToggleFloatingWindow,
+    /// Focus the monitor to the left (-1) or right (1).
+    MonitorFocus(isize),
+    /// Send the focused window to the monitor to the left (-1) or right (1).
+    MonitorSend(isize),
     Files,
     Settings,
     ConsumeLeft,
@@ -159,8 +163,24 @@ impl Vesper {
         }
     }
 
+    /// The monitor under `pos` becomes the focused one: new windows open there and the workspace keys act on it.
+    fn focus_monitor_at(&mut self, pos: smithay::utils::Point<f64, smithay::utils::Logical>) {
+        let name = self.space.outputs().find(|o| self.space.output_geometry(o).is_some_and(|g| g.to_f64().contains(pos))).map(|o| o.name());
+        let Some(name) = name else { return };
+        if name != self.layout.focused_name() && self.layout.focus_output(&name) {
+            if !self.keyboard_on_layer() {
+                let focused = self.layout.focused_window().cloned();
+                self.focus_window(focused);
+            }
+            self.ipc_broadcast();
+        }
+    }
+
     fn move_pointer(&mut self, pos: smithay::utils::Point<f64, smithay::utils::Logical>, time: u32) {
         let pointer = self.seat.get_pointer().unwrap();
+        if self.drag.is_none() && !self.locked() {
+            self.focus_monitor_at(pos);
+        }
         let under = self.surface_under(pos);
         if self.config.input.focus_follows_mouse && self.drag.is_none() && !self.locked() && !self.keyboard_on_layer() {
             self.focus_under(pos, under.as_ref().is_some_and(|(s, _)| self.is_layer_surface(s)));
@@ -324,6 +344,19 @@ impl Vesper {
                 let d = n.min(self.layout.workspaces.len() - 1) as isize - self.layout.active as isize;
                 if d != 0 {
                     self.run_action(Action::MoveToWorkspace(d));
+                }
+            }
+            Action::MonitorFocus(d) => {
+                if let Some(name) = self.monitor_neighbor(d) {
+                    self.focus_monitor(&name);
+                }
+            }
+            Action::MonitorSend(d) => {
+                if let (Some(name), Some(w)) = (self.monitor_neighbor(d), self.layout.focused_window().cloned()) {
+                    if self.layout.move_window_to(&w, &name) {
+                        self.layout_changed();
+                        self.warp_pointer_to_output(&name);
+                    }
                 }
             }
             Action::MoveToWorkspace(d) => {
@@ -705,8 +738,17 @@ impl Vesper {
 
 impl Vesper {
     /// Where a tiled window dropped at `pos` would end up, and the box that shows it.
+    /// The monitor under `pos`, if it is not the one the dragged window is on (the focused one): dropping there moves it.
+    fn other_monitor_at(&self, pos: smithay::utils::Point<f64, smithay::utils::Logical>) -> Option<String> {
+        let name = self.space.outputs().find(|o| self.space.output_geometry(o).is_some_and(|g| g.to_f64().contains(pos)))?.name();
+        (name != self.layout.focused_name() && self.layout.get(&name).is_some()).then_some(name)
+    }
+
     fn plan_drop(&self, window: &smithay::desktop::Window, pos: smithay::utils::Point<f64, smithay::utils::Logical>) -> Option<DropPlan> {
         use smithay::utils::{Logical, Rectangle};
+        if self.other_monitor_at(pos).is_some() {
+            return None; // no tiling hint over another monitor: the window moves there
+        }
         let gap = self.config.layout.gap;
         let own = self.drag.as_ref().map(|d| d.rect).or_else(|| self.space.element_geometry(window))?;
         let over = self.layout.ws().columns.iter().filter(|w| *w != window).find_map(|w| {
@@ -753,6 +795,11 @@ impl Vesper {
     /// A tiled window was dropped at `pos` (see `plan_drop`).
     fn drop_tiled(&mut self, window: &smithay::desktop::Window, pos: smithay::utils::Point<f64, smithay::utils::Logical>) {
         self.drop_hint = None;
+        if let Some(name) = self.other_monitor_at(pos) {
+            if self.layout.move_window_to(window, &name) {
+                return;
+            }
+        }
         match self.plan_drop(window, pos) {
             Some(DropPlan::Stack { target, below, .. }) => self.layout.stack_onto(window, &target, below),
             Some(DropPlan::Beside { target, after, .. }) => self.layout.move_beside(window, &target, after),
@@ -826,6 +873,10 @@ pub fn action_for(id: &str) -> Option<Action> {
         "fullscreen" => Action::ToggleFullscreen,
         "float" => Action::ToggleFloating,
         "float_window" => Action::ToggleFloatingWindow,
+        "monitor_left" => Action::MonitorFocus(-1),
+        "monitor_right" => Action::MonitorFocus(1),
+        "send_monitor_left" => Action::MonitorSend(-1),
+        "send_monitor_right" => Action::MonitorSend(1),
         "minimize" => Action::Minimize,
         "restore" => Action::RestoreLast,
         "lock" => Action::Lock,

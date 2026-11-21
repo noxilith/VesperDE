@@ -298,6 +298,7 @@ fn display(snap: &Snapshot) -> Vec<Section> {
         let (x1, y1) = (mons.iter().map(|m| m.x + m.w).max().unwrap_or(0), mons.iter().map(|m| m.y + m.h).max().unwrap_or(0));
         let center = ((x0 + x1) as f64 / 2.0, (y0 + y1) as f64 / 2.0);
         out.push(section("Arrange monitors", vec![Row { title: String::new(), desc: String::new(), ctl: Ctl::MonitorMap { mons, center } }]));
+        out.push(section("Workspaces", vec![toggle(snap, "Separate workspaces per monitor", "Each monitor has its own workspaces: windows open on, and the workspace keys act on, the monitor the pointer is on. Mod+Ctrl+Left/Right focuses the other monitor, Mod+Ctrl+Shift+Left/Right sends the window there. Off: one set of workspaces on the main monitor.", "display.per_monitor_workspaces")]));
     }
     for o in &state.outputs {
         let key = |f: &str| format!("display.outputs.\"{}\".{f}", o.name);

@@ -262,6 +262,16 @@ fn main() -> Result<()> {
                         let seq = state.start_menu;
                         let pressed = bar.secondary.is_none() && bar.start_seen.is_some_and(|s| s != seq);
                         bar.start_seen = Some(seq);
+                        // each monitor has its own workspaces: this bar shows (and controls) the ones of its own monitor
+                        let mut state = state;
+                        let mine = bar.secondary.clone().or_else(|| state.outputs.iter().find(|o| o.primary).map(|o| o.name.clone()));
+                        if let Some(m) = state.monitors.iter().find(|m| Some(&m.output) == mine.as_ref()).cloned() {
+                            state.workspaces = m.workspaces;
+                            state.active = m.active;
+                            state.focused = m.focused;
+                            state.minimized = m.minimized;
+                            state.minimized_ws = m.minimized_ws;
+                        }
                         bar.state = state;
                         bar.redraw();
                         bar.sync_secondary_bars();
@@ -409,6 +419,11 @@ impl Bar {
     }
 
     /// The first bar runs one more copy of itself on every other monitor (and stops it when the monitor goes away).
+    /// The monitor this bar is on: the name it was started for, or the primary one.
+    fn my_output(&self) -> Option<String> {
+        self.secondary.clone().or_else(|| self.state.outputs.iter().find(|o| o.primary).map(|o| o.name.clone()))
+    }
+
     fn sync_secondary_bars(&mut self) {
         if self.secondary.is_some() {
             return;
@@ -902,8 +917,8 @@ impl Bar {
                 self.toggle_popup(popup::Kind::Drives, x);
                 return;
             }
-            Some(Hit::Workspace(index)) => Command::Workspace { index },
-            Some(Hit::Restore(index)) => Command::Restore { index },
+            Some(Hit::Workspace(index)) => Command::Workspace { index, output: self.my_output() },
+            Some(Hit::Restore(index)) => Command::Restore { index, output: self.my_output() },
             Some(Hit::Gap(id)) => {
                 self.toggle_split(id);
                 return;

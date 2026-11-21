@@ -825,3 +825,266 @@ impl Layout {
         }
     }
 }
+
+// ------------------------------------------------------------------------ one layout per monitor
+
+/// The layouts of all monitors: each monitor has its own workspaces. It derefs to the layout of the *focused* monitor
+/// (the one the pointer is on), so code that works on "the" layout acts on that monitor; the methods defined here
+/// look through every monitor instead.
+pub struct Layouts {
+    monitors: Vec<(String, Layout)>,
+    focus: usize,
+}
+
+impl std::ops::Deref for Layouts {
+    type Target = Layout;
+    fn deref(&self) -> &Layout {
+        &self.monitors[self.focus].1
+    }
+}
+
+impl std::ops::DerefMut for Layouts {
+    fn deref_mut(&mut self) -> &mut Layout {
+        &mut self.monitors[self.focus].1
+    }
+}
+
+impl Layout {
+    /// Every window of the layout: tiled, floating and minimized.
+    pub fn all_windows(&self) -> Vec<Window> {
+        let mut all: Vec<Window> = self.workspaces.iter().flat_map(|ws| ws.columns.iter().cloned()).collect();
+        all.extend(self.workspaces.iter().flat_map(|ws| ws.floating.iter().map(|(w, _)| w.clone())));
+        all.extend(self.minimized.iter().map(|(_, w)| w.clone()));
+        all
+    }
+}
+
+impl Layouts {
+    /// Before any monitor is known there is one unnamed layout; it is given to the first monitor that appears.
+    pub fn new(workspaces: usize) -> Self {
+        Self { monitors: vec![(String::new(), Layout::new(workspaces))], focus: 0 }
+    }
+
+    /// Name of the focused monitor ("" before the first one appears).
+    pub fn focused_name(&self) -> &str {
+        &self.monitors[self.focus].0
+    }
+
+    /// Names of all monitors that have a layout.
+    pub fn names(&self) -> Vec<String> {
+        self.monitors.iter().map(|(n, _)| n.clone()).collect()
+    }
+
+    pub fn get(&self, name: &str) -> Option<&Layout> {
+        self.monitors.iter().find(|(n, _)| n == name).map(|(_, l)| l)
+    }
+
+    /// Make `name` the focused monitor. Returns whether it changed.
+    pub fn focus_output(&mut self, name: &str) -> bool {
+        match self.monitors.iter().position(|(n, _)| n == name) {
+            Some(i) if i != self.focus => {
+                self.focus = i;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Per monitor: its name and layout.
+    pub fn iter(&self) -> impl Iterator<Item = (&str, &Layout)> {
+        self.monitors.iter().map(|(n, l)| (n.as_str(), l))
+    }
+
+    /// Match the layouts to the monitors that exist: `wanted` is the list of monitor names (the first one is where
+    /// windows of a vanished monitor go). Returns whether anything changed.
+    pub fn sync(&mut self, wanted: &[String], workspaces: usize) -> bool {
+        if wanted.is_empty() {
+            return false;
+        }
+        let before = self.names();
+        // the unnamed starting layout belongs to the first monitor
+        if self.monitors.len() == 1 && self.monitors[0].0.is_empty() {
+            self.monitors[0].0 = wanted[0].clone();
+        }
+        let focused = self.monitors[self.focus].0.clone();
+        // monitors that went away hand their windows to the first remaining one
+        let mut orphans: Vec<Window> = Vec::new();
+        self.monitors.retain(|(n, l)| {
+            let keep = wanted.contains(n);
+            if !keep {
+                orphans.extend(l.all_windows());
+            }
+            keep
+        });
+        for name in wanted {
+            if !self.monitors.iter().any(|(n, _)| n == name) {
+                self.monitors.push((name.clone(), Layout::new(workspaces)));
+            }
+        }
+        let target = self.monitors.iter().position(|(n, _)| n == &wanted[0]).unwrap_or(0);
+        for w in orphans {
+            self.monitors[target].1.add_window(w);
+        }
+        self.focus = self.monitors.iter().position(|(n, _)| *n == focused).unwrap_or(target);
+        self.names() != before
+    }
+
+    /// Move `window` to monitor `to` (as a tiled window on that monitor's current workspace) and focus it there.
+    pub fn move_window_to(&mut self, window: &Window, to: &str) -> bool {
+        let Some(dst) = self.monitors.iter().position(|(n, _)| n == to) else { return false };
+        let Some(src) = self.monitors.iter().position(|(_, l)| l.contains(window)) else { return false };
+        if src == dst {
+            return false;
+        }
+        self.monitors[src].1.remove_window(window);
+        let l = &mut self.monitors[dst].1;
+        l.add_window(window.clone());
+        self.focus = dst;
+        true
+    }
+
+    // --- lookups that look through every monitor (they shadow the focused monitor's ones of the same name)
+
+    pub fn window_for_surface(&self, surface: &WlSurface) -> Option<&Window> {
+        self.monitors.iter().find_map(|(_, l)| l.window_for_surface(surface))
+    }
+
+    pub fn window_for_x11(&self, id: u32) -> Option<&Window> {
+        self.monitors.iter().find_map(|(_, l)| l.window_for_x11(id))
+    }
+
+    pub fn contains(&self, window: &Window) -> bool {
+        self.monitors.iter().any(|(_, l)| l.contains(window))
+    }
+
+    pub fn is_floating(&self, window: &Window) -> bool {
+        self.monitors.iter().any(|(_, l)| l.is_floating(window))
+    }
+
+    pub fn remove(&mut self, surface: &WlSurface) -> bool {
+        self.monitors.iter_mut().any(|(_, l)| l.remove(surface))
+    }
+
+    pub fn remove_window(&mut self, window: &Window) -> bool {
+        self.monitors.iter_mut().any(|(_, l)| l.remove_window(window))
+    }
+
+    /// Focus `window`, which also makes its monitor the focused one.
+    pub fn focus_window(&mut self, window: &Window) {
+        if let Some(i) = self.monitors.iter().position(|(_, l)| l.contains(window)) {
+            self.focus = i;
+        }
+        self.monitors[self.focus].1.focus_window(window);
+    }
+
+    pub fn float_rect_mut(&mut self, window: &Window) -> Option<&mut Rectangle<i32, Logical>> {
+        self.monitors.iter_mut().find_map(|(_, l)| l.float_rect_mut(window))
+    }
+
+    /// Float `window` on the monitor that has it (else on the focused one).
+    pub fn float_window(&mut self, window: &Window, rect: Rectangle<i32, Logical>) {
+        let i = self.monitors.iter().position(|(_, l)| l.contains(window)).unwrap_or(self.focus);
+        self.monitors[i].1.float_window(window, rect);
+    }
+
+    /// Every window on every monitor.
+    pub fn all_windows(&self) -> Vec<Window> {
+        self.monitors.iter().flat_map(|(_, l)| l.all_windows()).collect()
+    }
+
+    /// Tidy up the workspaces of every monitor.
+    pub fn compact(&mut self) -> bool {
+        let mut changed = false;
+        for (_, l) in &mut self.monitors {
+            changed |= l.compact();
+        }
+        changed
+    }
+
+    pub fn resize_workspaces(&mut self, n: usize) {
+        for (_, l) in &mut self.monitors {
+            l.resize_workspaces(n);
+        }
+    }
+}
+
+impl Layouts {
+    /// The tiled window owning `surface`, on any monitor.
+    pub fn tiled_window_for_surface(&self, surface: &WlSurface) -> Option<Window> {
+        self.monitors.iter().find_map(|(_, l)| l.find(surface).map(|(w, c)| l.workspaces[w].columns[c].clone()))
+    }
+
+    /// Take `surface` out of fullscreen wherever it is. Returns whether it was fullscreen.
+    pub fn unfullscreen_surface(&mut self, surface: &WlSurface) -> bool {
+        for (_, l) in &mut self.monitors {
+            if let Some((w, _)) = l.find(surface) {
+                return l.workspaces[w].fullscreen.take().is_some();
+            }
+        }
+        false
+    }
+
+    /// Is `window` tiled or floating (not minimized) on some monitor?
+    pub fn is_placed(&self, window: &Window) -> bool {
+        self.monitors.iter().any(|(_, l)| l.find_window(window).is_some() || l.workspaces.iter().any(|ws| ws.floating.iter().any(|(w, _)| w == window)))
+    }
+
+    /// Take `window` out of fullscreen on every monitor. Returns whether any was.
+    pub fn unfullscreen_window(&mut self, window: &Window) -> bool {
+        let mut changed = false;
+        for (_, l) in &mut self.monitors {
+            for ws in &mut l.workspaces {
+                if ws.fullscreen.as_ref() == Some(window) {
+                    ws.fullscreen = None;
+                    changed = true;
+                }
+            }
+        }
+        changed
+    }
+}
+
+#[cfg(test)]
+mod monitor_tests {
+    use super::*;
+
+    fn names(l: &Layouts) -> Vec<String> {
+        let mut n = l.names();
+        n.sort();
+        n
+    }
+
+    #[test]
+    fn first_monitor_adopts_the_starting_layout() {
+        let mut l = Layouts::new(4);
+        assert_eq!(l.focused_name(), "");
+        assert!(l.sync(&["DP-1".into()], 4));
+        assert_eq!(l.focused_name(), "DP-1");
+        assert_eq!(l.workspaces.len(), 4);
+    }
+
+    #[test]
+    fn each_monitor_has_its_own_workspaces() {
+        let mut l = Layouts::new(3);
+        l.sync(&["DP-1".into(), "HDMI-A-1".into()], 3);
+        assert_eq!(names(&l), ["DP-1", "HDMI-A-1"]);
+        l.active = 2; // DP-1 is focused
+        assert!(l.focus_output("HDMI-A-1"));
+        assert_eq!(l.active, 0, "the other monitor keeps its own active workspace");
+        assert!(l.focus_output("DP-1"));
+        assert_eq!(l.active, 2);
+        assert!(!l.focus_output("DP-1"), "already focused");
+        assert!(!l.focus_output("nope"));
+    }
+
+    #[test]
+    fn unplugging_keeps_focus_and_one_monitor_is_enough() {
+        let mut l = Layouts::new(2);
+        l.sync(&["DP-1".into(), "HDMI-A-1".into()], 2);
+        l.focus_output("HDMI-A-1");
+        assert!(l.sync(&["DP-1".into()], 2));
+        assert_eq!(l.focused_name(), "DP-1", "the focused monitor went away: fall back to the first");
+        assert!(!l.sync(&["DP-1".into()], 2), "nothing changed");
+        assert!(!l.sync(&[], 2), "no monitors known: leave everything alone");
+    }
+}

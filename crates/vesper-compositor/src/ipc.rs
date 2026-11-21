@@ -112,7 +112,10 @@ impl Vesper {
             return;
         }
         match cmd {
-            Command::Workspace { index } => {
+            Command::Workspace { index, output } => {
+                if let Some(o) = output {
+                    self.layout.focus_output(&o);
+                }
                 let n = self.layout.workspaces.len() - 1;
                 self.with_workspace_slide(|s| s.layout.active = index.min(n));
             }
@@ -212,7 +215,10 @@ impl Vesper {
                     self.layout_changed();
                 }
             }
-            Command::Restore { index } => {
+            Command::Restore { index, output } => {
+                if let Some(o) = output {
+                    self.layout.focus_output(&o);
+                }
                 if self.layout.restore(index).is_some() {
                     self.layout_changed();
                 }
@@ -269,6 +275,24 @@ impl Vesper {
         v
     }
 
+    fn monitor_state(&self, name: &str, l: &crate::layout::Layout) -> vesper_ipc::MonitorState {
+        vesper_ipc::MonitorState {
+            output: name.to_string(),
+            workspaces: l
+                .workspaces
+                .iter()
+                .map(|ws| Workspace {
+                    windows: ws.columns.iter().chain(ws.floating.iter().map(|(w, _)| w)).map(Self::window_info).collect(),
+                })
+                .collect(),
+            active: l.active,
+            focused: l.focused_window().map(Self::window_info),
+            minimized: l.minimized.iter().map(|(_, w)| Self::window_info(w)).collect(),
+            minimized_ws: l.minimized.iter().map(|(ws, _)| *ws).collect(),
+            focused_output: name == self.layout.focused_name(),
+        }
+    }
+
     pub fn ipc_state(&self) -> State {
         State {
             workspaces: self
@@ -284,6 +308,7 @@ impl Vesper {
             minimized: self.layout.minimized.iter().map(|(_, w)| Self::window_info(w)).collect(),
             minimized_ws: self.layout.minimized.iter().map(|(ws, _)| *ws).collect(),
             outputs: self.output_infos(),
+            monitors: self.layout.iter().map(|(n, l)| self.monitor_state(n, l)).collect(),
             kb_layout: self.kb_layout_name(),
             start_menu: self.start_menu_seq,
             ptt_live: self.ptt_held,

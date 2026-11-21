@@ -31,7 +31,7 @@ use smithay::{
 };
 use vesper_config::Config;
 
-use crate::layout::{self, Layout};
+use crate::layout::{self, Layouts};
 use crate::effects::Effects;
 
 /// An in-progress Mod+drag of a floating window.
@@ -99,7 +99,7 @@ pub struct Vesper {
     pub greeter: bool,
 
     pub space: Space<Window>,
-    pub layout: Layout,
+    pub layout: Layouts,
     pub popups: PopupManager,
     pub cursor_status: CursorImageStatus,
 
@@ -254,7 +254,7 @@ impl Vesper {
             display_handle: dh,
             loop_handle: event_loop.handle(),
             loop_signal: event_loop.get_signal(),
-            layout: Layout::new(config.layout.workspaces),
+            layout: Layouts::new(config.layout.workspaces),
             fx: Effects::new(),
             blur: Default::default(),
             round: None,
@@ -404,10 +404,33 @@ impl Vesper {
         best
     }
 
-    pub fn output_geometry(&self) -> Option<Rectangle<i32, Logical>> {
-        self.output().and_then(|o| self.space.output_geometry(o))
+    /// The monitor the pointer / keyboard focus is on: the one whose workspaces the keys act on.
+    pub fn focused_output(&self) -> Option<&Output> {
+        let name = self.layout.focused_name();
+        self.space.outputs().find(|o| o.name() == name).or_else(|| self.output())
     }
 
+    /// Geometry of the focused monitor.
+    pub fn output_geometry(&self) -> Option<Rectangle<i32, Logical>> {
+        self.focused_output().and_then(|o| self.space.output_geometry(o))
+    }
+
+    /// Keep one set of workspaces per monitor (or just one in total when `display.per_monitor_workspaces` is off).
+    pub fn sync_layouts(&mut self) {
+        let primary = self.output().map(|o| o.name());
+        let mut names: Vec<String> = Vec::new();
+        if let Some(p) = primary {
+            names.push(p);
+        }
+        if self.config.display.per_monitor_workspaces {
+            let mut others: Vec<String> = self.space.outputs().map(|o| o.name()).filter(|n| !names.contains(n)).collect();
+            others.sort();
+            names.extend(others);
+        }
+        if self.layout.sync(&names, self.config.layout.workspaces) {
+            tracing::info!("workspaces per monitor: {:?}", self.layout.names());
+        }
+    }
     // ---------------------------------------------------------------- layout
 
     /// Recompute every window's size and position and map the active workspace.
@@ -420,9 +443,24 @@ impl Vesper {
     }
 
     fn relayout_windows(&mut self) {
-        let Some(out_geo) = self.output_geometry() else { return };
+        self.sync_layouts();
+        // every monitor tiles its own workspaces, inside its own area
+        let focused = self.layout.focused_name().to_string();
+        for name in self.layout.names() {
+            self.layout.focus_output(&name);
+            let output = self.space.outputs().find(|o| o.name() == name).cloned();
+            if let Some(output) = output {
+                self.relayout_output(&output, name == focused);
+            }
+        }
+        self.layout.focus_output(&focused);
+    }
+
+    /// Tile the active workspace of the monitor `output` (which is the focused layout while this runs).
+    fn relayout_output(&mut self, output: &Output, is_focused: bool) {
+        let Some(out_geo) = self.space.output_geometry(output) else { return };
         // Tile inside whatever bars and docks (layer surfaces) leave free.
-        let mut geo = self.output().map(|o| layer_map_for_output(o).non_exclusive_zone()).unwrap_or(out_geo);
+        let mut geo = layer_map_for_output(output).non_exclusive_zone();
         geo.loc += out_geo.loc;
         let gap = self.config.layout.gap;
         let default_ratio = self.config.layout.column_width;
@@ -466,7 +504,7 @@ impl Vesper {
             })
             .collect();
         let focused_col = ranges.iter().position(|(s, e)| (*s..=*e).contains(&ws.focused)).unwrap_or(0);
-        let resizing = self.drag.as_ref().filter(|d| d.tiled && d.resize).map(|d| (d.window.clone(), d.rect.size.w, d.left, d.base_shift));
+        let resizing = self.drag.as_ref().filter(|d| d.tiled && d.resize && ws.columns.contains(&d.window)).map(|d| (d.window.clone(), d.rect.size.w, d.left, d.base_shift));
         if resizing.is_none() {
             ws.scroll = layout::solve_scroll(&widths, focused_col, ws.scroll, geo.size.w, gap);
         }
@@ -488,7 +526,9 @@ impl Vesper {
             }
             None => shift,
         };
-        self.last_shift = if resizing.is_some() { self.last_shift } else { shift };
+        if is_focused {
+            self.last_shift = if resizing.is_some() { self.last_shift } else { shift };
+        }
         for (ci, (s, e)) in ranges.iter().enumerate() {
             let x = geo.loc.x + layout::column_x(&widths, ci, gap) - ws.scroll + shift;
             // windows in a column share its height by weight, with a gap between them
@@ -528,9 +568,7 @@ impl Vesper {
             return; // the lock screen keeps the keyboard
         }
         let serial = SERIAL_COUNTER.next_serial();
-        let mut all: Vec<Window> = self.layout.workspaces.iter().flat_map(|ws| ws.columns.iter().cloned()).collect();
-        all.extend(self.layout.workspaces.iter().flat_map(|ws| ws.floating.iter().map(|(w, _)| w.clone())));
-        all.extend(self.layout.minimized.iter().map(|(_, w)| w.clone()));
+        let all: Vec<Window> = self.layout.all_windows();
         for w in &all {
             let on = window.as_ref() == Some(w);
             if w.set_activated(on) {

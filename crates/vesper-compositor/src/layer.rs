@@ -31,7 +31,7 @@ impl WlrLayerShellHandler for Vesper {
     ) {
         // a namespace like `vesper-bar@HDMI-A-1` asks for that monitor by name (for clients that cannot look the output up)
         let named = namespace.split_once('@').and_then(|(_, name)| self.space.outputs().find(|o| o.name() == name).cloned());
-        let Some(output) = output.as_ref().and_then(Output::from_resource).or(named).or_else(|| self.output().cloned()) else {
+        let Some(output) = output.as_ref().and_then(Output::from_resource).or(named).or_else(|| self.focused_output().cloned()) else {
             surface.send_close();
             return;
         };
@@ -125,7 +125,8 @@ impl Vesper {
 
     /// The surface under `pos`, looking at overlay/top layers, then windows, then bottom/background layers.
     pub fn surface_under(&self, pos: Point<f64, Logical>) -> Option<(WlSurface, Point<f64, Logical>)> {
-        let output = self.output()?;
+        // the monitor under the pointer (its bars, docks and the lock screen), else the primary one
+        let output = self.space.outputs().find(|o| self.space.output_geometry(o).is_some_and(|g| g.to_f64().contains(pos))).or_else(|| self.output())?;
         if let Some(surfaces) = self.lock_surfaces_for(output) {
             let origin = self.space.output_geometry(output)?.loc.to_f64();
             return surfaces.into_iter().next().map(|s| (s, origin));

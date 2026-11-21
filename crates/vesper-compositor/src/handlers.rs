@@ -243,8 +243,7 @@ impl XdgShellHandler for Vesper {
     }
 
     fn fullscreen_request(&mut self, surface: ToplevelSurface, _output: Option<wl_output::WlOutput>) {
-        if let Some((w, c)) = self.layout.find(surface.wl_surface()) {
-            let window = self.layout.workspaces[w].columns[c].clone();
+        if let Some(window) = self.layout.tiled_window_for_surface(surface.wl_surface()) {
             self.layout.focus_window(&window);
             self.layout.ws_mut().fullscreen = Some(window);
             self.layout_changed();
@@ -252,16 +251,13 @@ impl XdgShellHandler for Vesper {
     }
 
     fn unfullscreen_request(&mut self, surface: ToplevelSurface) {
-        if let Some((w, _)) = self.layout.find(surface.wl_surface()) {
-            if self.layout.workspaces[w].fullscreen.take().is_some() {
-                self.layout_changed();
-            }
+        if self.layout.unfullscreen_surface(surface.wl_surface()) {
+            self.layout_changed();
         }
     }
 
     fn minimize_request(&mut self, surface: ToplevelSurface) {
-        if let Some((w, c)) = self.layout.find(surface.wl_surface()) {
-            let window = self.layout.workspaces[w].columns[c].clone();
+        if let Some(window) = self.layout.tiled_window_for_surface(surface.wl_surface()) {
             self.layout.focus_window(&window);
             if self.layout.minimize_focused() {
                 self.layout_changed();

@@ -160,6 +160,7 @@ do_not_disturb  = false
 # One table per monitor, named like in Settings (eDP-1, HDMI-A-1, ...). Everything is optional.
 # [display]
 # primary = "eDP-1"
+# per_monitor_workspaces = true   # every monitor has its own workspaces (false: one set, on the primary monitor)
 # [display.outputs."eDP-1"]
 # mode  = "2560x1600@165"
 # scale = 1.5

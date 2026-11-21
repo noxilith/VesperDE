@@ -198,8 +198,7 @@ impl Vesper {
         let bw = self.config.appearance.border_width.clamp(0, 64);
         let Some(out_geo) = self.space.output_geometry(output) else { return Vec::new() };
         let scale = Scale::from(output.current_scale().fractional_scale());
-        let ws = self.layout.ws();
-        let fullscreen = ws.fullscreen.clone();
+        let fullscreen = self.fullscreen_on(output);
         let focused = self.layout.focused_window().cloned();
         if bw == 0 {
             self.fx.borders.clear();
@@ -347,6 +346,11 @@ mod tests {
 
 impl Vesper {
     /// The windows on `output` that asked for a blurred background.
+    /// The window fullscreen on `output`'s current workspace, if any.
+    pub fn fullscreen_on(&self, output: &Output) -> Option<Window> {
+        self.layout.get(&output.name()).map_or_else(|| self.layout.ws().fullscreen.clone(), |l| l.ws().fullscreen.clone())
+    }
+
     pub fn blur_params(&self, output: &Output) -> crate::blur::BlurParams {
         use crate::blur::{BlurGroup, BlurParams};
         let cfg = &self.config.blur;
@@ -355,7 +359,7 @@ impl Vesper {
 
         // listed applications
         if cfg.enabled && !cfg.apps.is_empty() {
-            let fullscreen = self.layout.ws().fullscreen.clone();
+            let fullscreen = self.fullscreen_on(output);
             let mut rects = Vec::new();
             for w in self.space.elements_for_output(output) {
                 if fullscreen.as_ref() == Some(w) || !cfg.matches(&crate::effects::app_id(w)) {
@@ -482,5 +486,53 @@ impl Vesper {
         };
         self.fx.hint = Some(el.clone());
         Some((window, el))
+    }
+}
+
+impl Vesper {
+    /// The monitor `delta` places to the left (-1) or right (1) of the focused one, ordered by position.
+    pub fn monitor_neighbor(&self, delta: isize) -> Option<String> {
+        let mut outs: Vec<(i32, i32, String)> = self
+            .layout
+            .names()
+            .into_iter()
+            .filter_map(|n| {
+                let o = self.space.outputs().find(|o| o.name() == n)?;
+                let g = self.space.output_geometry(o)?;
+                Some((g.loc.x, g.loc.y, n))
+            })
+            .collect();
+        outs.sort();
+        let at = outs.iter().position(|(_, _, n)| n == self.layout.focused_name())? as isize + delta;
+        usize::try_from(at).ok().and_then(|i| outs.get(i)).map(|(_, _, n)| n.clone())
+    }
+
+    /// Put the pointer in the middle of monitor `name`.
+    pub fn warp_pointer_to_output(&mut self, name: &str) {
+        let Some(geo) = self.space.outputs().find(|o| o.name() == name).and_then(|o| self.space.output_geometry(o)) else { return };
+        let center = Point::<f64, Logical>::from(((geo.loc.x + geo.size.w / 2) as f64, (geo.loc.y + geo.size.h / 2) as f64));
+        let pointer = self.seat.get_pointer().unwrap();
+        let under = self.surface_under(center);
+        pointer.motion(
+            self,
+            under,
+            &smithay::input::pointer::MotionEvent {
+                location: center,
+                serial: smithay::utils::SERIAL_COUNTER.next_serial(),
+                time: self.start_time.elapsed().as_millis() as u32,
+            },
+        );
+        pointer.frame(self);
+    }
+
+    /// Make monitor `name` the focused one: the pointer moves there and the keyboard goes to its focused window.
+    pub fn focus_monitor(&mut self, name: &str) {
+        if !self.layout.focus_output(name) {
+            return;
+        }
+        self.warp_pointer_to_output(name);
+        let focused = self.layout.focused_window().cloned();
+        self.focus_window(focused);
+        self.ipc_broadcast();
     }
 }

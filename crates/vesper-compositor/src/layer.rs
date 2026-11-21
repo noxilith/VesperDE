@@ -8,6 +8,7 @@ use smithay::{
     utils::{Logical, Point, SERIAL_COUNTER},
     wayland::{
         compositor::with_states,
+        seat::WaylandFocus,
         shell::wlr_layer::{
             KeyboardInteractivity, Layer, LayerSurface as WlrLayerSurface, LayerSurfaceCachedState,
             LayerSurfaceData, WlrLayerShellHandler, WlrLayerShellState,

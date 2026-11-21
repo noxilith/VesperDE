@@ -2910,6 +2910,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "vesper-shelltint"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "vesper-config",
+]
+
+[[package]]
 name = "vesper-switcher"
 version = "0.1.0"
 dependencies = [

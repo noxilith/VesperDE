@@ -100,11 +100,13 @@ pub struct ThemeSettings {
     pub fetch: bool,
     /// Colour File Manager from the wallpaper (writes a `vesper` theme for it).
     pub file_manager: bool,
+    /// Answer the ShellTint browser extension from Vesper's own palette (the built-in helper, `vesper-shelltint-host`). Off by default.
+    pub shelltint: bool,
 }
 
 impl Default for ThemeSettings {
     fn default() -> Self {
-        Self { enabled: true, mode: "dark".into(), scheme: "scheme-smart".into(), contrast: 0.0, prefer: "saturation".into(), binary: "matugen".into(), kitty: true, foot: true, shell: true, fetch: true, file_manager: true }
+        Self { enabled: true, mode: "dark".into(), scheme: "scheme-smart".into(), contrast: 0.0, prefer: "saturation".into(), binary: "matugen".into(), kitty: true, foot: true, shell: true, fetch: true, file_manager: true, shelltint: false }
     }
 }
 

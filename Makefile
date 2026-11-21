@@ -4,7 +4,7 @@ DESTDIR ?=
 CARGO   ?= cargo
 CARGOFLAGS ?= --release --locked
 
-BINS := vesper vesper-bar vesper-launcher vesper-switcher vesper-notify vesper-wallpaper vesper-wallpaper-picker vesper-theme vesper-lock vesper-screenshot vesper-settings vesper-power vesper-polkit vesper-greeter vesper-session file-manager
+BINS := vesper-shelltint-host vesper vesper-bar vesper-launcher vesper-switcher vesper-notify vesper-wallpaper vesper-wallpaper-picker vesper-theme vesper-lock vesper-screenshot vesper-settings vesper-power vesper-polkit vesper-greeter vesper-session file-manager
 
 all: build
 
@@ -28,6 +28,12 @@ install:
 	install -Dm755 target/release/vesper-wallpaper-picker $(DESTDIR)$(PREFIX)/bin/vesper-wallpaper-picker
 	install -Dm755 target/release/vesper-lock      $(DESTDIR)$(PREFIX)/bin/vesper-lock
 	install -Dm755 target/release/vesper-theme     $(DESTDIR)$(PREFIX)/bin/vesper-theme
+	# ShellTint browser extension: built-in helper, found by the browser through these native messaging manifests
+	install -Dm755 target/release/vesper-shelltint-host $(DESTDIR)$(PREFIX)/bin/vesper-shelltint-host
+	install -Dm644 packaging/native-messaging/shelltint.json          $(DESTDIR)$(PREFIX)/lib/mozilla/native-messaging-hosts/shelltint.json
+	install -Dm644 packaging/native-messaging/shelltint-chromium.json $(DESTDIR)/etc/chromium/native-messaging-hosts/shelltint.json
+	install -Dm644 packaging/native-messaging/shelltint-chromium.json $(DESTDIR)/etc/opt/chrome/native-messaging-hosts/shelltint.json
+	sed -i "s|@prefix@|$(PREFIX)|" $(DESTDIR)$(PREFIX)/lib/mozilla/native-messaging-hosts/shelltint.json $(DESTDIR)/etc/chromium/native-messaging-hosts/shelltint.json $(DESTDIR)/etc/opt/chrome/native-messaging-hosts/shelltint.json
 	install -Dm755 target/release/vesper-screenshot $(DESTDIR)$(PREFIX)/bin/vesper-screenshot
 	install -Dm755 target/release/vesper-settings   $(DESTDIR)$(PREFIX)/bin/vesper-settings
 	install -Dm755 target/release/vesper-power      $(DESTDIR)$(PREFIX)/bin/vesper-power
@@ -74,5 +80,6 @@ uninstall:
 	rm -rf $(DESTDIR)$(PREFIX)/share/licenses/file-manager
 	rm -rf $(DESTDIR)$(PREFIX)/share/vesper
 	rm -f $(DESTDIR)/etc/pam.d/vesper-lock
+	rm -f $(DESTDIR)$(PREFIX)/lib/mozilla/native-messaging-hosts/shelltint.json $(DESTDIR)/etc/chromium/native-messaging-hosts/shelltint.json $(DESTDIR)/etc/opt/chrome/native-messaging-hosts/shelltint.json
 
 .PHONY: all build test install uninstall

@@ -1,0 +1,7 @@
+{
+  "name": "shelltint",
+  "description": "ShellTint helper (built into Vesper)",
+  "path": "@prefix@/bin/vesper-shelltint-host",
+  "type": "stdio",
+  "allowed_origins": ["chrome-extension://paiglabcdaphmocanlbnikkipilidmfk/"]
+}

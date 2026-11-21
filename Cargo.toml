@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/vesper-config", "crates/vesper-ipc", "crates/vesper-compositor", "crates/vesper-bar", "crates/vesper-gfx", "crates/vesper-apps", "crates/vesper-launcher", "crates/vesper-notify", "crates/vesper-wallpaper", "crates/vesper-lock", "crates/vesper-screenshot", "crates/vesper-wallpaper-picker", "crates/vesper-theme", "crates/vesper-settings", "crates/vesper-power", "crates/vesper-polkit", "crates/vesper-switcher", "crates/vesper-greeter"]
+members = ["crates/vesper-config", "crates/vesper-ipc", "crates/vesper-compositor", "crates/vesper-bar", "crates/vesper-gfx", "crates/vesper-apps", "crates/vesper-launcher", "crates/vesper-notify", "crates/vesper-wallpaper", "crates/vesper-lock", "crates/vesper-screenshot", "crates/vesper-wallpaper-picker", "crates/vesper-theme", "crates/vesper-shelltint", "crates/vesper-settings", "crates/vesper-power", "crates/vesper-polkit", "crates/vesper-switcher", "crates/vesper-greeter"]
 # The file manager is a fork of Ski (https://github.com/ilyamiro/Ski): its own project with its own lockfile.
 exclude = ["file-manager"]
 

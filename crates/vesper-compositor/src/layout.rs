@@ -1114,5 +1114,18 @@ impl Layouts {
 /// scrolled past the edge of its monitor must not appear on the monitor next to it, even though both share one
 /// coordinate space. Windows no monitor owns (menus and tooltips) show wherever they are.
 pub fn on_output(window: &Window, output: &str) -> bool {
+    if DRAGGED.with(|d| d.borrow().as_ref() == Some(window)) {
+        return true;
+    }
     OWNERS.with(|o| o.borrow().get(window).is_none_or(|owner| owner == output))
+}
+
+thread_local! {
+    static DRAGGED: std::cell::RefCell<Option<Window>> = const { std::cell::RefCell::new(None) };
+}
+
+/// The window being dragged with Mod+left-click: it is shown on whichever monitor the pointer takes it to, so it can
+/// be carried across (it changes monitor when dropped).
+pub fn set_dragged(window: Option<Window>) {
+    DRAGGED.with(|d| *d.borrow_mut() = window);
 }

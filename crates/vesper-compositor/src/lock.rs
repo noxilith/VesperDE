@@ -33,6 +33,7 @@ impl SessionLockHandler for Vesper {
         tracing::info!("session locked");
         self.lock = Some(Vec::new());
         self.drag = None;
+        crate::layout::set_dragged(None);
         let serial = SERIAL_COUNTER.next_serial();
         if let Some(kb) = self.seat.get_keyboard() {
             kb.set_focus(self, None, serial);

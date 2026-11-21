@@ -517,15 +517,22 @@ impl Vesper {
                 self.drag_force = false;
             }
             let drag = self.drag.take(); // the press was ours, so the release is too
+            crate::layout::set_dragged(None);
             if let Some(d) = drag.as_ref().filter(|d| d.tiled && d.resize && d.left) {
                 // keep the right edge where it is: fold the shift into the scroll
                 let _ = d;
                 self.layout.ws_mut().scroll += self.resize_grown;
             }
-            if let Some(d) = drag.filter(|d| d.tiled && !d.resize) {
-                self.drop_tiled(&d.window, pointer.current_location());
-            } else {
-                self.layout_changed();
+            match drag {
+                Some(d) if d.tiled && !d.resize => self.drop_tiled(&d.window, pointer.current_location()),
+                Some(d) if !d.tiled && !d.resize => {
+                    // a floating window dropped on another monitor changes monitor (and stays floating there)
+                    if let Some(name) = self.other_monitor_at(pointer.current_location()) {
+                        self.move_floating_to(&d.window, &name);
+                    }
+                    self.layout_changed();
+                }
+                _ => self.layout_changed(),
             }
             return;
         }
@@ -541,6 +548,9 @@ impl Vesper {
                 self.layout_changed();
                 if let Some(rect) = self.layout.float_rect_mut(&window).map(|r| *r) {
                     self.drag = Some(Drag { window, resize: code == BTN_RIGHT, start: pointer.current_location(), rect, tiled: false, left: pointer.current_location().x < (rect.loc.x + rect.size.w / 2) as f64, top: pointer.current_location().y < (rect.loc.y + rect.size.h / 2) as f64, base_shift: self.last_shift });
+                    if code == BTN_LEFT {
+                        crate::layout::set_dragged(self.drag.as_ref().map(|d| d.window.clone()));
+                    }
                 }
                 return;
             }
@@ -551,6 +561,9 @@ impl Vesper {
                     self.layout_changed();
                     if let Some(rect) = self.space.element_geometry(&window) {
                         self.drag = Some(Drag { window: window.clone(), resize: code == BTN_RIGHT, start: pointer.current_location(), rect, tiled: true, left: pointer.current_location().x < (rect.loc.x + rect.size.w / 2) as f64, top: pointer.current_location().y < (rect.loc.y + rect.size.h / 2) as f64, base_shift: self.last_shift });
+                        if code == BTN_LEFT {
+                            crate::layout::set_dragged(self.drag.as_ref().map(|d| d.window.clone()));
+                        }
                         self.space.raise_element(&window, false);
                     }
                     return;
@@ -947,6 +960,20 @@ impl Vesper {
         if self.layout.ws().float_mode {
             let rect = self.cascaded_float_rect(self.layout.ws().floating.len());
             self.layout.float_by_mode(&window, rect);
+        }
+    }
+}
+
+impl Vesper {
+    /// Move a floating `window` to monitor `name`, keeping it floating where it was dropped (pulled inside that monitor).
+    fn move_floating_to(&mut self, window: &smithay::desktop::Window, name: &str) {
+        let Some(mut rect) = self.space.element_geometry(window) else { return };
+        if let Some(og) = self.space.outputs().find(|o| o.name() == name).and_then(|o| self.space.output_geometry(o)) {
+            rect.loc.x = rect.loc.x.clamp(og.loc.x, (og.loc.x + og.size.w - rect.size.w).max(og.loc.x));
+            rect.loc.y = rect.loc.y.clamp(og.loc.y, (og.loc.y + og.size.h - rect.size.h).max(og.loc.y));
+        }
+        if self.layout.move_window_to(window, name) {
+            self.layout.float_window(window, rect);
         }
     }
 }

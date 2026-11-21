@@ -114,6 +114,8 @@ struct Notify {
     center: Option<Center>,
     last_center_draw: Instant,
     dnd: bool,
+    /// Keeps a burst of notifications down to one chime.
+    chime: vesper_config::sound::Throttle,
     config: vesper_config::Config,
     config_stamp: Option<std::time::SystemTime>,
     keyboard: Option<wl_keyboard::WlKeyboard>,
@@ -207,6 +209,7 @@ fn main() -> Result<()> {
         published: String::new(),
         center: None,
         dnd: config.notifications.do_not_disturb,
+        chime: vesper_config::sound::Throttle::new(),
         last_center_draw: Instant::now(),
         config_stamp: vesper_config::Config::stamp(),
         keyboard: None,
@@ -284,6 +287,10 @@ impl Notify {
         self.remember(&n);
         if self.dnd_now() && n.urgency < 2 {
             return; // kept in the history, not shown
+        }
+        // the desktop's own messages (a screenshot saved) have their own sound, or none
+        if self.config.notifications.sound && n.app_name != "Vesper" && self.chime.ready(Duration::from_millis(500)) {
+            vesper_config::sound::play(vesper_config::sound::Sound::Notification);
         }
         let default = self.config.notifications.default_timeout;
         let deadline = match n.timeout_ms {

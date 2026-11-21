@@ -6,6 +6,7 @@
 pub mod keys;
 pub mod plugins;
 pub mod profiles;
+pub mod sound;
 
 use std::path::PathBuf;
 
@@ -268,11 +269,13 @@ pub struct Screenshots {
     pub ocr_lang: String,
     /// Let apps share a single window (not just a whole monitor) through the screen-sharing portal. Applies after a restart.
     pub share_windows: bool,
+    /// Play a camera shutter sound when a screenshot is taken.
+    pub sound: bool,
 }
 
 impl Default for Screenshots {
     fn default() -> Self {
-        Self { dir: "~/Pictures/Screenshots".into(), ocr_lang: "eng".into(), share_windows: true }
+        Self { dir: "~/Pictures/Screenshots".into(), ocr_lang: "eng".into(), share_windows: true, sound: true }
     }
 }
 
@@ -789,6 +792,8 @@ pub struct Notifications {
     pub margin: u32,
     /// How many popups show at once (1 to 10).
     pub max_visible: usize,
+    /// Play a short chime when a notification pops up (not for do-not-disturb, and not for Vesper's own messages).
+    pub sound: bool,
 }
 
 impl Notifications {
@@ -804,7 +809,7 @@ impl Notifications {
 
 impl Default for Notifications {
     fn default() -> Self {
-        Self { history_max: 100, default_timeout: 6, do_not_disturb: false, dnd_schedule: false, dnd_from: 22, dnd_to: 7, position: "top-right".into(), width: 360, margin: 12, max_visible: 5 }
+        Self { history_max: 100, default_timeout: 6, do_not_disturb: false, dnd_schedule: false, dnd_from: 22, dnd_to: 7, position: "top-right".into(), width: 360, margin: 12, max_visible: 5, sound: true }
     }
 }
 

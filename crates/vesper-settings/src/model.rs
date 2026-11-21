@@ -765,6 +765,7 @@ fn notifications(snap: &Snapshot) -> Vec<Section> {
         vec![
             toggle(snap, "Do not disturb", "Notifications go to the history without popping up (urgent ones still do)", "notifications.do_not_disturb"),
             toggle(snap, "Do not disturb on a schedule", "Turns itself on between the two hours below", "notifications.dnd_schedule"),
+            toggle(snap, "Notification sound", "A short chime when a notification pops up. Needs pw-play, paplay or aplay", "notifications.sound"),
             num(snap, "Schedule starts at", "Hour of the day, 0-23", "notifications.dnd_from", 0.0, 23.0, 1.0, true, ":00"),
             num(snap, "Schedule ends at", "Hour of the day, 0-23 (may be after midnight)", "notifications.dnd_to", 0.0, 23.0, 1.0, true, ":00"),
             secs_choice(snap, "Stay on screen for", "When the app does not say; 0 keeps them until clicked", "notifications.default_timeout", &[0, 3, 5, 6, 10, 15, 30]),
@@ -847,6 +848,7 @@ fn lock(snap: &Snapshot) -> Vec<Section> {
                 Row { title: "Sleep".into(), desc: "Lock and suspend the computer".into(), ctl: Ctl::Button { label: "Sleep now".into(), act: Act::Suspend } },
                 Row { title: "Screenshots folder".into(), desc: "".into(), ctl: Ctl::Text { path: "screenshots.dir".into(), val: snap.s("screenshots.dir"), hint: "~/Pictures/Screenshots".into() } },
                 toggle(snap, "Share single windows", "Lets the screen picker (Discord, browsers, OBS) offer one window, not only whole monitors. Applies after a restart; turn it off if monitor sharing misbehaves", "screenshots.share_windows"),
+                toggle(snap, "Screenshot sound", "A camera shutter sound when a screenshot is taken. Needs pw-play, paplay or aplay", "screenshots.sound"),
             ],
         ),
     ]

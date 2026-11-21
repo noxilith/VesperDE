@@ -108,6 +108,7 @@ lock_after = 300      # lock the screen after this many seconds without input; 0
 [screenshots]
 dir = "~/Pictures/Screenshots"
 ocr_lang = "eng"                       # language(s) for "copy text from the screen" (tesseract names, e.g. "eng+deu"); needs tesseract installed
+sound = true                            # a camera shutter sound when a screenshot is taken
 
 [lock]
 switch_user = "auto"   # "Switch user" button on the lock screen: auto (when SDDM/LightDM runs), never, or your own command
@@ -149,6 +150,7 @@ power_key         = "menu" # menu, suspend, poweroff, ignore
 history_max     = 100
 default_timeout = 6        # seconds; 0 = until clicked
 do_not_disturb  = false
+sound           = true     # a short chime when a notification pops up
 
 [apps]
 # file_manager = "file-manager"

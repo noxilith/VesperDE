@@ -219,6 +219,9 @@ impl Vesper {
     /// A screenshot is ready: put it on the clipboard and tell the user.
     pub fn screenshot_done(&mut self, done: Done) {
         self.clipboard_png = Some(done.png);
+        if self.config.screenshots.sound {
+            vesper_config::sound::play(vesper_config::sound::Sound::Screenshot);
+        }
         set_data_device_selection(&self.display_handle, &self.seat, vec!["image/png".into()], ());
         self.announce_clipboard_to_x11(Some(vec!["image/png".into()]));
         let (summary, body) = match &done.path {

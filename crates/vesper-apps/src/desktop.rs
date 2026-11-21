@@ -86,7 +86,8 @@ impl Apps {
                 }
                 // A hidden helper entry without an icon (a URL handler that runs the same program) must not
                 // hide the real app: let the entry with an icon, or the visible one, have the key.
-                Some(&j) if (self.entries[j].icon.is_empty() && !entry.icon.is_empty()) || (self.entries[j].no_display && !entry.no_display) => {
+                // (`j == i` is this very entry, listed under the same key twice, and is not in `entries` yet.)
+                Some(&j) if j != i && ((self.entries[j].icon.is_empty() && !entry.icon.is_empty()) || (self.entries[j].no_display && !entry.no_display)) => {
                     self.by_key.insert(k, i);
                 }
                 _ => {}
@@ -208,6 +209,18 @@ mod tests {
     fn strips_codes() {
         assert_eq!(strip_field_codes("firefox %u"), "firefox");
         assert_eq!(strip_field_codes("sh -c 'echo 100%%'"), "sh -c 'echo 100%'");
+    }
+
+    #[test]
+    fn an_entry_named_like_its_program_is_indexed() {
+        // id and Exec give the same key twice: the second must not look up an entry that is not stored yet
+        let mut apps = Apps::default();
+        apps.add(DesktopEntry { id: "kitty".into(), name: "Kitty".into(), exec: "kitty".into(), ..Default::default() });
+        apps.add(DesktopEntry { id: "claude-code-url-handler".into(), exec: "claude".into(), no_display: true, ..Default::default() });
+        apps.add(DesktopEntry { id: "com.anthropic.Claude".into(), wm_class: "com.anthropic.Claude".into(), exec: "claude-desktop".into(), icon: "claude-desktop".into(), ..Default::default() });
+        assert_eq!(apps.find("kitty").map(|e| e.name.as_str()), Some("Kitty"));
+        assert_eq!(apps.find("com.anthropic.Claude").map(|e| e.icon.as_str()), Some("claude-desktop"));
+        assert_eq!(apps.find("Claude").map(|e| e.icon.as_str()), Some("claude-desktop"));
     }
 
     #[test]

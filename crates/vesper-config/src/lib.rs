@@ -645,11 +645,13 @@ pub struct Appearance {
     pub cursor_theme: String,
     /// Cursor size in pixels.
     pub cursor_size: u32,
+    /// Hide the titlebar that GTK 3 apps (Tauri apps like Astralis) draw themselves, through `~/.config/gtk-3.0/gtk.css`.
+    pub hide_client_titlebars: bool,
 }
 
 impl Default for Appearance {
     fn default() -> Self {
-        Self { border_width: 2, border_focus: String::new(), border_unfocus: String::new(), border_tiled: true, corner_radius: 12, night_light: false, night_light_strength: 35, cursor_theme: "Bibata-Modern-Classic".into(), cursor_size: 24 }
+        Self { border_width: 2, border_focus: String::new(), border_unfocus: String::new(), border_tiled: true, corner_radius: 12, night_light: false, night_light_strength: 35, cursor_theme: "Bibata-Modern-Classic".into(), cursor_size: 24, hide_client_titlebars: true }
     }
 }
 

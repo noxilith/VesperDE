@@ -4,6 +4,7 @@ mod blur;
 mod cursor;
 mod dmabuf;
 mod effects;
+mod gtkcss;
 mod handlers;
 mod input;
 mod ipc;
@@ -91,6 +92,7 @@ fn main() -> Result<()> {
         }
         std::env::set_var("XCURSOR_SIZE", appearance.cursor_size.to_string());
         cursor::install_for_apps(&appearance.cursor_theme, appearance.cursor_size);
+        gtkcss::apply(appearance.hide_client_titlebars);
     }
     let mut state = Vesper::new(&event_loop, display, config, nested, seat_name);
     state.greeter = greeter;

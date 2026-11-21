@@ -301,6 +301,7 @@ impl Vesper {
         let inputs_changed = format!("{:?}", new.input) != format!("{:?}", self.config.input);
         let layout_changed = new.layout.workspaces != self.config.layout.workspaces;
         let cursor_was = (self.config.appearance.cursor_theme.clone(), self.config.appearance.cursor_size);
+        let titlebars_was = self.config.appearance.hide_client_titlebars;
         let ptt_was = (self.config.media.ptt, self.config.media.ptt_key.clone());
         self.config = new;
         if cursor_was != (self.config.appearance.cursor_theme.clone(), self.config.appearance.cursor_size) {
@@ -308,6 +309,9 @@ impl Vesper {
             std::env::set_var("XCURSOR_THEME", &a.cursor_theme);
             std::env::set_var("XCURSOR_SIZE", a.cursor_size.to_string());
             crate::cursor::install_for_apps(&a.cursor_theme, a.cursor_size);
+        }
+        if titlebars_was != self.config.appearance.hide_client_titlebars {
+            crate::gtkcss::apply(self.config.appearance.hide_client_titlebars);
         }
         if ptt_was != (self.config.media.ptt, self.config.media.ptt_key.clone()) {
             self.ptt_refresh();

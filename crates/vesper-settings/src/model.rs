@@ -433,6 +433,7 @@ fn appearance(snap: &Snapshot) -> Vec<Section> {
                 toggle(snap, "Focus follows mouse", "Hovering a window focuses it, no click needed", "input.focus_follows_mouse"),
                 toggle(snap, "Move the pointer to the focused window", "When Mod+arrows change the focused window the pointer jumps to its middle (not when you click or hover)", "input.warp_mouse_on_focus"),
                 toggle(snap, "Border on tiled windows", "Off: only floating windows get a border", "appearance.border_tiled"),
+                toggle(snap, "Hide app titlebars", "Hides the titlebar GTK 3 apps such as Astralis draw themselves (Vesper draws none). Takes effect when the app is restarted", "appearance.hide_client_titlebars"),
                 num(snap, "Gap between windows", "Space between columns and around the screen", "layout.gap", 0.0, 64.0, 2.0, true, " px"),
                 num(snap, "New window width", "Fraction of the screen a new column takes", "layout.column_width", 0.2, 1.0, 0.05, false, ""),
                 toggle(snap, "Workspaces take over unused ones", "Workspaces with windows fill the first places: unused ones move to the end a second after you leave them, so three busy workspaces are always 1 to 3", "layout.dynamic_workspaces"),

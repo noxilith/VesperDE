@@ -120,6 +120,7 @@ border_tiled   = true
 corner_radius  = 8          # rounded window corners in px; 0 = square
 cursor_theme   = "Bibata-Modern-Classic"   # "" = the built-in arrow; Bibata and Phinger themes come with Vesper (see Settings > Appearance > Cursor)
 cursor_size    = 28                        # pixels
+hide_client_titlebars = true   # hide the titlebar GTK 3 apps (Astralis) draw themselves
 night_light    = false      # warm, dimmer colours for the evening (monitor colour ramps; a tint if the driver refuses)
 night_light_strength = 35   # 1..100
 

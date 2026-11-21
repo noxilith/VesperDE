@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <title>Settings</title>
+  <g fill="#6f61e0">
+    <circle cx="256" cy="256" r="164"/>
+    <rect id="t" x="222" y="48" width="68" height="108" rx="20"/>
+    <use href="#t" transform="rotate(45 256 256)"/>
+    <use href="#t" transform="rotate(90 256 256)"/>
+    <use href="#t" transform="rotate(135 256 256)"/>
+    <use href="#t" transform="rotate(180 256 256)"/>
+    <use href="#t" transform="rotate(225 256 256)"/>
+    <use href="#t" transform="rotate(270 256 256)"/>
+    <use href="#t" transform="rotate(315 256 256)"/>
+  </g>
+  <circle cx="256" cy="256" r="124" fill="#8b7bff"/>
+  <circle cx="256" cy="256" r="58" fill="#6f61e0"/>
+  <circle cx="256" cy="256" r="40" fill="#b3a8ff" opacity=".9"/>
+  <path d="M160 214a110 110 0 0 1 82-62" stroke="#b3a8ff" stroke-width="6" stroke-linecap="round" fill="none" opacity=".55"/>
+</svg>

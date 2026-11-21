@@ -14,6 +14,8 @@ pub struct DesktopEntry {
     pub exec: String,
     pub icon: String,
     pub wm_class: String,
+    /// `X-Flatpak=`: the flatpak application id, for apps installed through flatpak.
+    pub flatpak: String,
     /// `NoDisplay=true` or `Hidden=true`: not meant to be listed in menus or launchers.
     pub no_display: bool,
     /// `Terminal=true`: must be run inside a terminal emulator.
@@ -26,6 +28,8 @@ pub struct DesktopEntry {
 pub struct Apps {
     entries: Vec<DesktopEntry>,
     by_key: HashMap<String, usize>,
+    /// Weaker keys (the last part of a reverse-DNS id: `claude` for `com.anthropic.Claude`), tried only when nothing else matches.
+    by_loose: HashMap<String, usize>,
 }
 
 pub fn data_dirs() -> Vec<PathBuf> {
@@ -71,10 +75,26 @@ impl Apps {
 
     fn add(&mut self, entry: DesktopEntry) {
         let i = self.entries.len();
-        let mut keys = vec![entry.id.to_lowercase(), entry.wm_class.to_lowercase(), exec_name(&entry.exec)];
+        // A flatpak's Exec is `flatpak run ...`, so name the app by its flatpak id and by the program it runs inside.
+        let flatpak_command = entry.exec.split_whitespace().find_map(|w| w.strip_prefix("--command=")).unwrap_or("").to_lowercase();
+        let mut keys = vec![entry.id.to_lowercase(), entry.wm_class.to_lowercase(), exec_name(&entry.exec), flatpak_command, entry.flatpak.to_lowercase()];
         keys.retain(|k| !k.is_empty());
         for k in keys {
-            self.by_key.entry(k).or_insert(i);
+            match self.by_key.get(&k) {
+                None => {
+                    self.by_key.insert(k, i);
+                }
+                // A hidden helper entry without an icon (a URL handler that runs the same program) must not
+                // hide the real app: let the entry with an icon, or the visible one, have the key.
+                Some(&j) if (self.entries[j].icon.is_empty() && !entry.icon.is_empty()) || (self.entries[j].no_display && !entry.no_display) => {
+                    self.by_key.insert(k, i);
+                }
+                _ => {}
+            }
+        }
+        let id = entry.id.strip_suffix(".desktop").unwrap_or(&entry.id);
+        if let Some(last) = id.rsplit('.').next().map(str::to_lowercase).filter(|l| l.len() > 2 && id.contains('.')) {
+            self.by_loose.entry(last).or_insert(i);
         }
         self.entries.push(entry);
     }
@@ -87,7 +107,40 @@ impl Apps {
     /// Find the entry for an app id / desktop id / window class (case-insensitive).
     pub fn find(&self, key: &str) -> Option<&DesktopEntry> {
         let k = key.trim_end_matches(".desktop").to_lowercase();
-        self.by_key.get(&k).or_else(|| self.by_key.get(&format!("{k}.desktop"))).map(|&i| &self.entries[i])
+        // The candidates, best match first. A hidden entry without an icon (a URL handler that runs the same program)
+        // is only taken when nothing better matches.
+        let last = k.rsplit('.').next().filter(|l| *l != k && l.len() > 2).map(str::to_owned);
+        let candidates = [
+            self.by_key.get(&k),
+            self.by_key.get(&format!("{k}.desktop")),
+            // `Claude` for the app `com.anthropic.Claude`, or `astralis` for `app.astralis.desktop`
+            self.by_loose.get(&k),
+            last.as_ref().and_then(|l| self.by_key.get(l)),
+        ];
+        let usable = |i: &&usize| !(self.entries[**i].no_display && self.entries[**i].icon.is_empty());
+        let hits = candidates.iter().copied().flatten();
+        hits.clone().find(usable).or_else(|| hits.clone().next()).map(|&i| &self.entries[i])
+    }
+
+    /// Icon names to try for a window of `app_id`, best first: the desktop entry's icon, then the id itself in a few spellings.
+    pub fn icon_names(&self, app_id: &str) -> Vec<String> {
+        let mut names: Vec<String> = Vec::new();
+        let mut push = |n: String| {
+            if !n.is_empty() && !names.contains(&n) {
+                names.push(n);
+            }
+        };
+        if let Some(e) = self.find(app_id) {
+            push(e.icon.clone());
+            push(e.id.clone());
+            push(e.flatpak.clone());
+        }
+        let id = app_id.trim_end_matches(".desktop");
+        push(app_id.to_owned());
+        push(app_id.to_lowercase());
+        push(id.to_owned());
+        push(id.rsplit('.').next().unwrap_or("").to_lowercase());
+        names
     }
 }
 
@@ -119,6 +172,7 @@ fn parse(path: &Path) -> Option<DesktopEntry> {
             "Exec" => e.exec = strip_field_codes(v),
             "Icon" => e.icon = v.to_owned(),
             "StartupWMClass" => e.wm_class = v.to_owned(),
+            "X-Flatpak" => e.flatpak = v.to_owned(),
             "Type" => is_app = v == "Application",
             "Hidden" | "NoDisplay" => hidden |= v == "true",
             "Terminal" => e.terminal = v == "true",

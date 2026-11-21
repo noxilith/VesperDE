@@ -930,8 +930,8 @@ impl Renderer {
                         c.rounded_rect(ix - 5, y - 4, s + 10, s + 8, 8.0, with_alpha(self.pal.on_surface, 0.15));
                     }
                     let app = self.apps.find(&win.app_id);
-                    let icon_name = app.map(|a| a.icon.clone()).filter(|n| !n.is_empty()).unwrap_or_else(|| win.app_id.clone());
-                    match self.icons.get(&icon_name, s) {
+                    let icon_names = self.apps.icon_names(&win.app_id);
+                    match self.icons.get_any(&icon_names, s) {
                         Some(img) => c.image(ix, y, &img),
                         None => {
                             let name = app.map(|a| a.name.as_str()).filter(|n| !n.is_empty()).unwrap_or(&win.app_id);

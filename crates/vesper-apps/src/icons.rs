@@ -23,6 +23,13 @@ impl Icons {
     }
 }
 
+impl Icons {
+    /// The first of `names` that has an icon.
+    pub fn get_any(&mut self, names: &[String], size: i32) -> Option<Image> {
+        names.iter().find_map(|n| self.get(n, size))
+    }
+}
+
 fn load(name: &str, size: i32) -> Option<Image> {
     if name.is_empty() {
         return None;

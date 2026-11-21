@@ -47,6 +47,7 @@ install:
 	install -Dm644 session/vesper-portals.conf     $(DESTDIR)$(PREFIX)/share/xdg-desktop-portal/vesper-portals.conf
 	install -Dm644 session/xdg-desktop-portal-wlr.config  $(DESTDIR)/etc/xdg/xdg-desktop-portal-wlr/config
 	install -Dm644 session/vesper-settings.desktop $(DESTDIR)$(PREFIX)/share/applications/vesper-settings.desktop
+	install -Dm644 assets/vesper-settings.svg      $(DESTDIR)$(PREFIX)/share/icons/hicolor/scalable/apps/vesper-settings.svg
 	install -Dm644 config/default.toml             $(DESTDIR)/etc/vesper/config.toml
 	install -Dm644 LICENSE                         $(DESTDIR)$(PREFIX)/share/licenses/vesper/LICENSE 2>/dev/null || true
 	# File Manager (fork of Ski)
@@ -78,6 +79,7 @@ uninstall:
 	      $(DESTDIR)$(PREFIX)/share/dbus-1/services/org.freedesktop.impl.portal.desktop.filemanager.service \
 	      $(DESTDIR)$(PREFIX)/share/dbus-1/services/org.freedesktop.FileManager1.service
 	rm -rf $(DESTDIR)$(PREFIX)/share/licenses/file-manager
+	rm -f $(DESTDIR)$(PREFIX)/share/icons/hicolor/scalable/apps/vesper-settings.svg
 	rm -rf $(DESTDIR)$(PREFIX)/share/vesper
 	rm -f $(DESTDIR)/etc/pam.d/vesper-lock
 	rm -f $(DESTDIR)$(PREFIX)/lib/mozilla/native-messaging-hosts/shelltint.json $(DESTDIR)/etc/chromium/native-messaging-hosts/shelltint.json $(DESTDIR)/etc/opt/chrome/native-messaging-hosts/shelltint.json

@@ -54,11 +54,13 @@ install:
 	done
 	install -Dm644 file-manager/LICENSE $(DESTDIR)$(PREFIX)/share/licenses/file-manager/LICENSE
 	install -Dm644 packaging/60-vesper-emoji.conf                  $(DESTDIR)/etc/fonts/conf.d/60-vesper-emoji.conf
+	install -Dm644 packaging/49-vesper-power.rules                 $(DESTDIR)/usr/share/polkit-1/rules.d/49-vesper-power.rules
 	install -d $(DESTDIR)$(PREFIX)/share/vesper/cursors
 	cp -a assets/cursors/. $(DESTDIR)$(PREFIX)/share/vesper/cursors/
 
 uninstall:
 	rm -f $(addprefix $(DESTDIR)$(PREFIX)/bin/,$(BINS))
+	rm -f $(DESTDIR)/usr/share/polkit-1/rules.d/49-vesper-power.rules
 	rm -f $(DESTDIR)$(PREFIX)/share/wayland-sessions/vesper.desktop \
 	      $(DESTDIR)$(PREFIX)/share/xdg-desktop-portal/vesper-portals.conf \
 	      $(DESTDIR)$(PREFIX)/share/applications/file-manager.desktop \

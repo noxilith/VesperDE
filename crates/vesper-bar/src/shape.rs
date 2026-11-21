@@ -105,6 +105,32 @@ pub fn paint(c: &mut Canvas, shape: &Shape, fill: Rgba, border_w: i32, border: R
     }
 }
 
+/// Like [`paint`], but the fill and border colours' own alpha is applied once (as the notification cards do): `paint` also
+/// scales it by the coverage's alpha, so a colour at 85 % ended up about 72 % opaque.
+pub fn paint_exact(c: &mut Canvas, shape: &Shape, fill: Rgba, border_w: i32, border: Rgba) {
+    let bw = border_w.max(0) as f32;
+    let (x0, y0, x1, y1) = shape.bounds();
+    for y in y0.max(0)..y1.min(c.h) {
+        for x in x0.max(0)..x1.min(c.w) {
+            let outer = cover(shape.sdf(x as f32 + 0.5, y as f32 + 0.5, bw));
+            if outer <= 0.0 {
+                continue;
+            }
+            let bd = shape.border_sdf(x as f32 + 0.5, y as f32 + 0.5, bw);
+            let mask = shape.border_mask(y as f32 + 0.5);
+            let ring = if bw > 0.0 { (cover(bd) - cover(bd + bw)).max(0.0) * mask } else { 0.0 };
+            let ring = ring.min(outer);
+            let inner = outer - ring;
+            if inner > 0.0 {
+                c.blend(x, y, fill, (inner * 255.0) as u8);
+            }
+            if ring > 0.0 {
+                c.blend(x, y, border, (ring * 255.0) as u8);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

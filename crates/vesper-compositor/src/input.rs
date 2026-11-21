@@ -201,6 +201,11 @@ impl Vesper {
         if self.layout.focused_window() == Some(&w) {
             return;
         }
+        // A window still sliding away after a workspace switch is under the pointer for a moment: hovering it must
+        // not pull the layout back to the workspace just left.
+        if !self.layout.is_on_shown_workspace(&w) {
+            return;
+        }
         self.layout.focus_window(&w);
         let focused = self.layout.focused_window().cloned();
         self.focus_window(focused);
@@ -580,6 +585,8 @@ impl Vesper {
                 match under {
                     // clicking a menu or tooltip leaves the focus where it is
                     Some(window) if crate::xwayland::is_override_redirect(&window) => {}
+                    // a window still sliding away after a workspace switch is not clickable
+                    Some(window) if !self.layout.is_on_shown_workspace(&window) => {}
                     Some(window) => {
                         self.layout.focus_window(&window);
                         self.layout_changed();

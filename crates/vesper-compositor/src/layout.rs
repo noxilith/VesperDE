@@ -1024,6 +1024,15 @@ impl Layouts {
         false
     }
 
+    /// Is `window` on the workspace some monitor is showing right now? (A window sliding out after a workspace
+    /// switch is still mapped for a moment, but is not visible in this sense.)
+    pub fn is_on_shown_workspace(&self, window: &Window) -> bool {
+        self.monitors.iter().any(|(_, l)| {
+            let ws = &l.workspaces[l.active];
+            ws.columns.iter().any(|w| w == window) || ws.floating.iter().any(|(w, _)| w == window)
+        })
+    }
+
     /// Is `window` tiled or floating (not minimized) on some monitor?
     pub fn is_placed(&self, window: &Window) -> bool {
         self.monitors.iter().any(|(_, l)| l.find_window(window).is_some() || l.workspaces.iter().any(|ws| ws.floating.iter().any(|(w, _)| w == window)))

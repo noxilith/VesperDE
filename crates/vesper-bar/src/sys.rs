@@ -195,7 +195,21 @@ fn read_mic() -> Option<bool> {
         return None;
     }
     let s = String::from_utf8_lossy(&out.stdout);
-    s.contains("Volume:").then(|| !s.contains("[MUTED]"))
+    if !s.contains("Volume:") {
+        return None;
+    }
+    // With no microphone at all (no sound card, or its driver or firmware is missing) PipeWire still answers for
+    // @DEFAULT_AUDIO_SOURCE@: it names its dummy output, which never shows as muted. That is not a microphone.
+    let info = crate::cmd::output(Command::new("wpctl").args(["inspect", "@DEFAULT_AUDIO_SOURCE@"])).ok()?;
+    if !is_source(&String::from_utf8_lossy(&info.stdout)) {
+        return None;
+    }
+    Some(!s.contains("[MUTED]"))
+}
+
+/// Does `wpctl inspect` output describe a capture device (`media.class = "Audio/Source"`, also virtual ones)?
+fn is_source(inspect: &str) -> bool {
+    inspect.lines().any(|l| l.trim_start_matches(['*', ' ']).starts_with("media.class") && l.contains("\"Audio/Source"))
 }
 
 fn read_volume() -> Option<Volume> {
@@ -261,6 +275,14 @@ pub fn wpctl(args: &[&str]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_capture_devices_count_as_a_microphone() {
+        assert!(is_source("id 52, type PipeWire:Interface:Node\n  * media.class = \"Audio/Source\"\n"));
+        assert!(is_source("    media.class = \"Audio/Source/Virtual\""));
+        assert!(!is_source("id 37, type PipeWire:Interface:Node\n    media.class = \"Audio/Sink\"\n"));
+        assert!(!is_source(""));
+    }
 
     #[test]
     fn volume_parsing() {

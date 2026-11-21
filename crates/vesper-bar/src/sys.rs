@@ -322,12 +322,36 @@ pub fn watch_volume(on_change: impl Fn() + Send + 'static) -> bool {
                 std::thread::spawn(move || {
                     let mut batches = 0u32;
                     let mut last = Instant::now() - Duration::from_secs(1);
+                    // Every program that talks to PipeWire is a "client", and clients coming and going are changes in
+                    // this stream too: the `wpctl` runs the bar makes after each change would start the next one, for
+                    // ever. A batch that only mentions clients is not a change to any sound device: skip it.
+                    let mut clients: std::collections::HashSet<u64> = std::collections::HashSet::new();
+                    let mut ids: Vec<u64> = Vec::new();
                     for line in BufReader::new(out).lines().map_while(Result::ok) {
+                        // objects print their own fields at four spaces; anything deeper belongs to a nested value
+                        if let Some(rest) = line.strip_prefix("    \"id\": ") {
+                            if let Ok(id) = rest.trim_end_matches(',').trim().parse::<u64>() {
+                                ids.push(id);
+                            }
+                            continue;
+                        }
+                        if let Some(rest) = line.strip_prefix("    \"type\": ") {
+                            if let Some(&id) = ids.last() {
+                                if rest.contains("Interface:Client") {
+                                    clients.insert(id);
+                                } else {
+                                    clients.remove(&id); // the number may have been a client's before
+                                }
+                            }
+                            continue;
+                        }
                         if line != "]" {
                             continue;
                         }
+                        let only_clients = !ids.is_empty() && ids.iter().all(|id| clients.contains(id));
+                        ids.clear();
                         batches += 1;
-                        if batches == 1 {
+                        if batches == 1 || only_clients {
                             continue; // the first array is the initial picture, not a change
                         }
                         // a burst of changes: look at most 20 times a second, and always at the last state

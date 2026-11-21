@@ -207,20 +207,13 @@ impl Vesper {
     }
 
     pub fn unfullscreen_window(&mut self, window: &Window) {
-        let mut changed = false;
-        for ws in &mut self.layout.workspaces {
-            if ws.fullscreen.as_ref() == Some(window) {
-                ws.fullscreen = None;
-                changed = true;
-            }
-        }
-        if changed {
+        if self.layout.unfullscreen_window(window) {
             self.layout_changed();
         }
     }
 
     pub fn minimize_window(&mut self, window: &Window) {
-        if self.layout.find_window(window).is_some() || self.layout.workspaces.iter().any(|ws| ws.floating.iter().any(|(w, _)| w == window)) {
+        if self.layout.is_placed(window) {
             self.layout.focus_window(window);
             if self.layout.minimize_focused() {
                 self.layout_changed();
@@ -404,15 +397,7 @@ impl XwmHandler for Vesper {
     fn disconnected(&mut self, _xwm: XwmId) {
         tracing::warn!("lost the connection to Xwayland");
         self.xwm = None;
-        let gone: Vec<Window> = self
-            .layout
-            .workspaces
-            .iter()
-            .flat_map(|ws| ws.columns.iter().chain(ws.floating.iter().map(|(w, _)| w)))
-            .chain(self.layout.minimized.iter().map(|(_, w)| w))
-            .filter(|w| w.is_x11())
-            .cloned()
-            .collect();
+        let gone: Vec<Window> = self.layout.all_windows().into_iter().filter(|w| w.is_x11()).collect();
         for w in gone {
             self.fx.forget(&w);
             self.space.unmap_elem(&w);

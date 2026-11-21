@@ -1116,16 +1116,17 @@ impl Renderer {
         PROMPT_H
     }
 
-    /// Paint the box of a popup the way the bar is painted: its corner radius, how see-through it is, and its border
-    /// (colour, width, blend).
+    /// Paint the box of a popup like the notification cards: the bar's corner radius, border and see-through level (never
+    /// clearer than 40 % opaque), with the fill's alpha applied once.
     fn panel(&self, c: &mut Canvas, x: i32, y: i32, w: i32, h: i32) {
+        let a = self.bg_alpha.max((40u32 * 255 / 100) as u8);
         let mut border = self.style.border.unwrap_or(self.pal.primary);
         if self.style.border_blend {
-            border[3] = (border[3] as u32 * self.bg_alpha as u32 / 255) as u8;
+            border[3] = (border[3] as u32 * a as u32 / 255) as u8;
         }
-        let fill = vesper_config::theme::alpha(self.pal.surface, self.bg_alpha);
+        let fill = vesper_config::theme::alpha(self.pal.surface, a);
         let r = self.style.radius.clamp(8, 28);
-        shape::paint(c, &Shape::Round { x, y, w, h, r }, fill, self.style.border_width.max(1), border);
+        shape::paint_exact(c, &Shape::Round { x, y, w, h, r }, fill, self.style.border_width.max(1), border);
     }
 
     /// A labelled slider row at (ix, y): the label on the left, the percentage on the right, the track below.

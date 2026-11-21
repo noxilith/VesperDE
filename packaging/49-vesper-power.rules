@@ -1,0 +1,26 @@
+// Vesper: let members of the wheel group power off, reboot and suspend from the start menu and the power menu.
+//
+// Vesper is started by a login manager that does not register a logind session (no pam_systemd), so polkit cannot tell
+// that the caller is the person sitting at the machine and falls back to asking for a password - from an agent it can
+// not reach ("Authorization requires authentication but no agent is available"). The buttons then do nothing.
+//
+// This grants the same permission an active local session would have, to the wheel group only. Delete the file to go
+// back to polkit's defaults.
+polkit.addRule(function(action, subject) {
+    var id = action.id;
+    var prefixes = [
+        "org.freedesktop.login1.power-off",
+        "org.freedesktop.login1.reboot",
+        "org.freedesktop.login1.suspend",
+        "org.freedesktop.login1.hibernate",
+        "org.freedesktop.login1.halt"
+    ];
+    // not the "-ignore-inhibit" variants: a program that asked to hold off shutdown still gets its say
+    if (id.indexOf("ignore-inhibit") !== -1)
+        return polkit.Result.NOT_HANDLED;
+    for (var i = 0; i < prefixes.length; i++) {
+        if (id.indexOf(prefixes[i]) === 0 && subject.isInGroup("wheel"))
+            return polkit.Result.YES;
+    }
+    return polkit.Result.NOT_HANDLED;
+});

@@ -61,6 +61,10 @@ pub enum Action {
     ToggleFloating,
     /// Float or tile just the focused window.
     ToggleFloatingWindow,
+    /// Focus the monitor to the left (-1) or right (1).
+    MonitorFocus(isize),
+    /// Send the focused window to the monitor to the left (-1) or right (1).
+    MonitorSend(isize),
     Files,
     Settings,
     ConsumeLeft,
@@ -159,8 +163,24 @@ impl Vesper {
         }
     }
 
+    /// The monitor under `pos` becomes the focused one: new windows open there and the workspace keys act on it.
+    fn focus_monitor_at(&mut self, pos: smithay::utils::Point<f64, smithay::utils::Logical>) {
+        let name = self.space.outputs().find(|o| self.space.output_geometry(o).is_some_and(|g| g.to_f64().contains(pos))).map(|o| o.name());
+        let Some(name) = name else { return };
+        if name != self.layout.focused_name() && self.layout.focus_output(&name) {
+            if !self.keyboard_on_layer() {
+                let focused = self.layout.focused_window().cloned();
+                self.focus_window(focused);
+            }
+            self.ipc_broadcast();
+        }
+    }
+
     fn move_pointer(&mut self, pos: smithay::utils::Point<f64, smithay::utils::Logical>, time: u32) {
         let pointer = self.seat.get_pointer().unwrap();
+        if self.drag.is_none() && !self.locked() {
+            self.focus_monitor_at(pos);
+        }
         let under = self.surface_under(pos);
         if self.config.input.focus_follows_mouse && self.drag.is_none() && !self.locked() && !self.keyboard_on_layer() {
             self.focus_under(pos, under.as_ref().is_some_and(|(s, _)| self.is_layer_surface(s)));
@@ -174,7 +194,7 @@ impl Vesper {
         if on_layer {
             return;
         }
-        let Some((w, _)) = self.space.element_under(pos).map(|(w, l)| (w.clone(), l)) else { return };
+        let Some((w, _)) = self.window_under(pos) else { return };
         if crate::xwayland::is_override_redirect(&w) {
             return;
         }
@@ -324,6 +344,19 @@ impl Vesper {
                 let d = n.min(self.layout.workspaces.len() - 1) as isize - self.layout.active as isize;
                 if d != 0 {
                     self.run_action(Action::MoveToWorkspace(d));
+                }
+            }
+            Action::MonitorFocus(d) => {
+                if let Some(name) = self.monitor_neighbor(d) {
+                    self.focus_monitor(&name);
+                }
+            }
+            Action::MonitorSend(d) => {
+                if let (Some(name), Some(w)) = (self.monitor_neighbor(d), self.layout.focused_window().cloned()) {
+                    if self.layout.move_window_to(&w, &name) {
+                        self.layout_changed();
+                        self.warp_pointer_to_output(&name);
+                    }
                 }
             }
             Action::MoveToWorkspace(d) => {
@@ -484,15 +517,22 @@ impl Vesper {
                 self.drag_force = false;
             }
             let drag = self.drag.take(); // the press was ours, so the release is too
+            crate::layout::set_dragged(None);
             if let Some(d) = drag.as_ref().filter(|d| d.tiled && d.resize && d.left) {
                 // keep the right edge where it is: fold the shift into the scroll
                 let _ = d;
                 self.layout.ws_mut().scroll += self.resize_grown;
             }
-            if let Some(d) = drag.filter(|d| d.tiled && !d.resize) {
-                self.drop_tiled(&d.window, pointer.current_location());
-            } else {
-                self.layout_changed();
+            match drag {
+                Some(d) if d.tiled && !d.resize => self.drop_tiled(&d.window, pointer.current_location()),
+                Some(d) if !d.tiled && !d.resize => {
+                    // a floating window dropped on another monitor changes monitor (and stays floating there)
+                    if let Some(name) = self.other_monitor_at(pointer.current_location()) {
+                        self.move_floating_to(&d.window, &name);
+                    }
+                    self.layout_changed();
+                }
+                _ => self.layout_changed(),
             }
             return;
         }
@@ -502,22 +542,28 @@ impl Vesper {
             return;
         }
         if state == ButtonState::Pressed && (code == BTN_LEFT || code == BTN_RIGHT) && self.mod_held() {
-            let under = self.space.element_under(pointer.current_location()).map(|(w, _)| w.clone());
+            let under = self.window_under(pointer.current_location()).map(|(w, _)| w);
             if let Some(window) = under.filter(|w| self.layout.is_floating(w)) {
                 self.layout.focus_window(&window);
                 self.layout_changed();
                 if let Some(rect) = self.layout.float_rect_mut(&window).map(|r| *r) {
                     self.drag = Some(Drag { window, resize: code == BTN_RIGHT, start: pointer.current_location(), rect, tiled: false, left: pointer.current_location().x < (rect.loc.x + rect.size.w / 2) as f64, top: pointer.current_location().y < (rect.loc.y + rect.size.h / 2) as f64, base_shift: self.last_shift });
+                    if code == BTN_LEFT {
+                        crate::layout::set_dragged(self.drag.as_ref().map(|d| d.window.clone()));
+                    }
                 }
                 return;
             }
             // A tiled column: Mod+left moves it (drop it between other columns), Mod+right changes its width.
-            if let Some(window) = self.space.element_under(pointer.current_location()).map(|(w, _)| w.clone()) {
+            if let Some(window) = self.window_under(pointer.current_location()).map(|(w, _)| w) {
                 if !self.layout.is_floating(&window) {
                     self.layout.focus_window(&window);
                     self.layout_changed();
                     if let Some(rect) = self.space.element_geometry(&window) {
                         self.drag = Some(Drag { window: window.clone(), resize: code == BTN_RIGHT, start: pointer.current_location(), rect, tiled: true, left: pointer.current_location().x < (rect.loc.x + rect.size.w / 2) as f64, top: pointer.current_location().y < (rect.loc.y + rect.size.h / 2) as f64, base_shift: self.last_shift });
+                        if code == BTN_LEFT {
+                            crate::layout::set_dragged(self.drag.as_ref().map(|d| d.window.clone()));
+                        }
                         self.space.raise_element(&window, false);
                     }
                     return;
@@ -530,7 +576,7 @@ impl Vesper {
             // the wallpaper changer closes itself when it loses focus, and clicking the bar should not unfocus your window.
             let on_layer = self.surface_under(pointer.current_location()).is_some_and(|(s, _)| self.is_layer_surface(&s));
             if !on_layer {
-                let under = self.space.element_under(pointer.current_location()).map(|(w, _)| w.clone());
+                let under = self.window_under(pointer.current_location()).map(|(w, _)| w);
                 match under {
                     // clicking a menu or tooltip leaves the focus where it is
                     Some(window) if crate::xwayland::is_override_redirect(&window) => {}
@@ -705,8 +751,21 @@ impl Vesper {
 
 impl Vesper {
     /// Where a tiled window dropped at `pos` would end up, and the box that shows it.
+    /// The monitor under `pos`, if it is not the one the dragged window is on (the focused one): dropping there moves it.
+    fn other_monitor_at(&self, pos: smithay::utils::Point<f64, smithay::utils::Logical>) -> Option<String> {
+        let name = self.space.outputs().find(|o| self.space.output_geometry(o).is_some_and(|g| g.to_f64().contains(pos)))?.name();
+        (name != self.layout.focused_name() && self.layout.get(&name).is_some()).then_some(name)
+    }
+
     fn plan_drop(&self, window: &smithay::desktop::Window, pos: smithay::utils::Point<f64, smithay::utils::Logical>) -> Option<DropPlan> {
         use smithay::utils::{Logical, Rectangle};
+        if self.other_monitor_at(pos).is_some() {
+            return None; // no tiling hint over another monitor: the window moves there
+        }
+        // a portrait monitor lays its windows out top to bottom: the drop zones below assume columns left to right
+        if self.output_geometry().is_some_and(|g| g.size.h > g.size.w) {
+            return None;
+        }
         let gap = self.config.layout.gap;
         let own = self.drag.as_ref().map(|d| d.rect).or_else(|| self.space.element_geometry(window))?;
         let over = self.layout.ws().columns.iter().filter(|w| *w != window).find_map(|w| {
@@ -722,11 +781,12 @@ impl Vesper {
                 return Some(DropPlan::Stack { target, below, rect });
             }
             let after = rel > 0.5;
-            let w = (g.size.w / 2).min(own.size.w).max(60);
-            let x = if after { g.loc.x + g.size.w - w } else { g.loc.x };
-            return Some(DropPlan::Beside { target, after, rect: Rectangle::new((x, g.loc.y).into(), (w, g.size.h).into()) });
+            // the window becomes a column of its own next to the target: show that column, where it will really be
+            let (x, y, w, h) = self.new_column_rect(own, if after { g.loc.x + g.size.w + gap } else { g.loc.x });
+            return Some(DropPlan::Beside { target, after, rect: Rectangle::new((x, y).into(), (w, h).into()) });
         }
-        // free space: between the columns on either side of the pointer (or against a screen edge when there is room)
+        // free space: between the columns on either side of the pointer (the strip always starts at the left: no anchoring to
+        // the right or the middle, dropping only reorders)
         let out = self.output_geometry()?;
         let leaders: Vec<smithay::desktop::Window> = {
             let ws = self.layout.ws();
@@ -734,32 +794,38 @@ impl Vesper {
         };
         let geos: Vec<Rectangle<i32, Logical>> = leaders.iter().filter_map(|w| self.space.element_geometry(w)).collect();
         let to = geos.iter().filter(|g| (g.loc.x + g.size.w / 2) as f64 <= pos.x).count();
-        let strip: i32 = geos.iter().map(|g| g.size.w).sum::<i32>() + own.size.w + gap * (geos.len() as i32 + 2);
-        let fits = strip <= out.size.w;
-        let align = if (pos.x - out.loc.x as f64) / out.size.w as f64 > 0.5 { crate::layout::Align::Right } else { crate::layout::Align::Left };
-        let w = own.size.w.min(out.size.w / 2).max(60);
-        let x = if fits {
-            match align {
-                crate::layout::Align::Right => out.loc.x + out.size.w - gap - w,
-                _ => out.loc.x + gap,
-            }
-        } else {
-            let boundary = geos.get(to).map(|g| g.loc.x - gap / 2).or_else(|| geos.last().map(|g| g.loc.x + g.size.w + gap / 2)).unwrap_or(out.loc.x + gap);
-            (boundary - w / 2).clamp(out.loc.x, out.loc.x + out.size.w - w)
-        };
-        Some(DropPlan::Column { to, fits, align, rect: Rectangle::new((x, own.loc.y).into(), (w, own.size.h).into()) })
+        // the dragged column takes the place of the column now at slot `to` (which moves right), or goes after the last one
+        let at = geos.get(to).map(|g| g.loc.x).or_else(|| geos.last().map(|g| g.loc.x + g.size.w + gap)).unwrap_or(out.loc.x + gap);
+        let (x, y, w, h) = self.new_column_rect(own, at);
+        Some(DropPlan::Column { to, rect: Rectangle::new((x, y).into(), (w, h).into()) })
+    }
+
+    /// The box of a window that gets a column of its own at `x`: its own width and the full height of the tiling area,
+    /// kept on the screen. Returns (x, y, w, h).
+    fn new_column_rect(&self, own: smithay::utils::Rectangle<i32, smithay::utils::Logical>, x: i32) -> (i32, i32, i32, i32) {
+        let gap = self.config.layout.gap;
+        let Some(out) = self.focused_output() else { return (x, own.loc.y, own.size.w, own.size.h) };
+        let og = self.space.output_geometry(out).unwrap_or_default();
+        let zone = smithay::desktop::layer_map_for_output(out).non_exclusive_zone();
+        let w = own.size.w.min(og.size.w - 2 * gap).max(60);
+        let x = x.clamp(og.loc.x + gap, (og.loc.x + og.size.w - w - gap).max(og.loc.x + gap));
+        (x, og.loc.y + zone.loc.y + gap, w, crate::layout::column_height(zone.size.h, gap))
     }
 
     /// A tiled window was dropped at `pos` (see `plan_drop`).
     fn drop_tiled(&mut self, window: &smithay::desktop::Window, pos: smithay::utils::Point<f64, smithay::utils::Logical>) {
         self.drop_hint = None;
+        if let Some(name) = self.other_monitor_at(pos) {
+            if self.layout.move_window_to(window, &name) {
+                return;
+            }
+        }
         match self.plan_drop(window, pos) {
             Some(DropPlan::Stack { target, below, .. }) => self.layout.stack_onto(window, &target, below),
             Some(DropPlan::Beside { target, after, .. }) => self.layout.move_beside(window, &target, after),
-            Some(DropPlan::Column { to, fits, align, .. }) => {
-                if fits {
-                    self.layout.ws_mut().align = align;
-                }
+            Some(DropPlan::Column { to, .. }) => {
+                // a stray anchor from before (the strip pinned right or centred) goes away
+                self.layout.ws_mut().align = crate::layout::Align::Left;
                 self.layout.move_column_to(window, to);
             }
             None => {}
@@ -772,7 +838,7 @@ impl Vesper {
 pub enum DropPlan {
     Stack { target: smithay::desktop::Window, below: bool, rect: smithay::utils::Rectangle<i32, smithay::utils::Logical> },
     Beside { target: smithay::desktop::Window, after: bool, rect: smithay::utils::Rectangle<i32, smithay::utils::Logical> },
-    Column { to: usize, fits: bool, align: crate::layout::Align, rect: smithay::utils::Rectangle<i32, smithay::utils::Logical> },
+    Column { to: usize, rect: smithay::utils::Rectangle<i32, smithay::utils::Logical> },
 }
 
 impl DropPlan {
@@ -826,6 +892,10 @@ pub fn action_for(id: &str) -> Option<Action> {
         "fullscreen" => Action::ToggleFullscreen,
         "float" => Action::ToggleFloating,
         "float_window" => Action::ToggleFloatingWindow,
+        "monitor_left" => Action::MonitorFocus(-1),
+        "monitor_right" => Action::MonitorFocus(1),
+        "send_monitor_left" => Action::MonitorSend(-1),
+        "send_monitor_right" => Action::MonitorSend(1),
         "minimize" => Action::Minimize,
         "restore" => Action::RestoreLast,
         "lock" => Action::Lock,
@@ -892,6 +962,20 @@ impl Vesper {
         if self.layout.ws().float_mode {
             let rect = self.cascaded_float_rect(self.layout.ws().floating.len());
             self.layout.float_by_mode(&window, rect);
+        }
+    }
+}
+
+impl Vesper {
+    /// Move a floating `window` to monitor `name`, keeping it floating where it was dropped (pulled inside that monitor).
+    fn move_floating_to(&mut self, window: &smithay::desktop::Window, name: &str) {
+        let Some(mut rect) = self.space.element_geometry(window) else { return };
+        if let Some(og) = self.space.outputs().find(|o| o.name() == name).and_then(|o| self.space.output_geometry(o)) {
+            rect.loc.x = rect.loc.x.clamp(og.loc.x, (og.loc.x + og.size.w - rect.size.w).max(og.loc.x));
+            rect.loc.y = rect.loc.y.clamp(og.loc.y, (og.loc.y + og.size.h - rect.size.h).max(og.loc.y));
+        }
+        if self.layout.move_window_to(window, name) {
+            self.layout.float_window(window, rect);
         }
     }
 }

@@ -687,7 +687,7 @@ pub struct OutputConfig {
     pub transform: String,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Display {
     /// Monitor that holds the tiled workspaces; empty = the first one found.
@@ -697,6 +697,15 @@ pub struct Display {
     /// Let the GPU scan windows and bars out on hardware overlay planes. Off by default: on some AMD setups with two monitors
     /// the bar and popups vanish when planes are used.
     pub overlay_planes: bool,
+    /// Every monitor has its own workspaces (windows open on, and the keys act on, the monitor the pointer is on). Off: one
+    /// set of workspaces on the primary monitor, as before.
+    pub per_monitor_workspaces: bool,
+}
+
+impl Default for Display {
+    fn default() -> Self {
+        Self { primary: String::new(), outputs: Default::default(), overlay_planes: false, per_monitor_workspaces: true }
+    }
 }
 
 /// Sleep and power button.

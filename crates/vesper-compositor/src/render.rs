@@ -118,7 +118,7 @@ pub fn output_elements(
     layer_elements(renderer, output, &[Layer::Overlay, Layer::Top], &mut elements);
     // Windows, topmost first; each window's border sits just under it (so a window above covers the borders below).
     if let Some(out_geo) = space.output_geometry(output) {
-        let mut wins: Vec<Window> = space.elements_for_output(output).cloned().collect();
+        let mut wins: Vec<Window> = space.elements_for_output(output).filter(|w| crate::layout::on_output(w, &output.name())).cloned().collect();
         wins.reverse();
         let radius = style.map_or(0.0, |(_, r)| r as f32 * scale.x as f32);
         for w in wins {

@@ -39,6 +39,26 @@ pub struct State {
     pub osd_seq: u32,
     #[serde(default)]
     pub osd_kind: String,
+    /// Workspaces of every monitor (each monitor has its own set). The fields above are those of the focused monitor.
+    #[serde(default)]
+    pub monitors: Vec<MonitorState>,
+}
+
+/// The workspaces of one monitor.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct MonitorState {
+    /// Output name (`DP-1`).
+    pub output: String,
+    pub workspaces: Vec<Workspace>,
+    pub active: usize,
+    pub focused: Option<WindowInfo>,
+    #[serde(default)]
+    pub minimized: Vec<WindowInfo>,
+    #[serde(default)]
+    pub minimized_ws: Vec<usize>,
+    /// This is the monitor the keyboard focus (and the pointer) is on.
+    #[serde(default)]
+    pub focused_output: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -73,7 +93,7 @@ pub struct WindowInfo {
 #[serde(tag = "cmd", rename_all = "snake_case")]
 pub enum Command {
     /// Switch to workspace `index` (0-based).
-    Workspace { index: usize },
+    Workspace { index: usize, #[serde(default)] output: Option<String> },
     /// Focus the column `index` of workspace `workspace` (switching to that workspace).
     Focus { workspace: usize, index: usize },
     /// Minimize the focused window.
@@ -83,7 +103,7 @@ pub enum Command {
     /// Float the focused window, or tile it again.
     ToggleFloating,
     /// Restore minimized window `index` (see `State::minimized`).
-    Restore { index: usize },
+    Restore { index: usize, #[serde(default)] output: Option<String> },
     /// Lock the screen.
     Lock,
     /// Lock (if configured) and suspend the machine.
@@ -144,11 +164,11 @@ mod tests {
 
     #[test]
     fn roundtrip() {
-        let s = State { workspaces: vec![Workspace::default(); 2], active: 1, focused: None, minimized: vec![], minimized_ws: vec![], outputs: vec![], kb_layout: String::new(), kb_layouts: 0, start_menu: 0, ptt_live: false, osd_seq: 0, osd_kind: String::new() };
+        let s = State { workspaces: vec![Workspace::default(); 2], active: 1, focused: None, minimized: vec![], minimized_ws: vec![], outputs: vec![], kb_layout: String::new(), kb_layouts: 0, start_menu: 0, ptt_live: false, osd_seq: 0, osd_kind: String::new(), monitors: vec![] };
         let line = serde_json::to_string(&s).unwrap();
         assert_eq!(serde_json::from_str::<State>(&line).unwrap(), s);
         let c: Command = serde_json::from_str(r#"{"cmd":"workspace","index":2}"#).unwrap();
-        assert_eq!(c, Command::Workspace { index: 2 });
+        assert_eq!(c, Command::Workspace { index: 2, output: None });
         let f: Command = serde_json::from_str(r#"{"cmd":"focus","workspace":1,"index":0}"#).unwrap();
         assert_eq!(f, Command::Focus { workspace: 1, index: 0 });
     }

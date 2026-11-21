@@ -510,7 +510,26 @@ fn read_wifi() -> Result<Vec<Wifi>, String> {
     }
     nets.sort_by(|a, b| b.active.cmp(&a.active).then(b.signal.cmp(&a.signal)));
     nets.truncate(10);
+    if nets.is_empty() {
+        if let Some(note) = unmanaged_wifi_note() {
+            return Err(note);
+        }
+    }
     Ok(nets)
+}
+
+/// NetworkManager lists nothing for a Wi-Fi adapter it does not manage (the connection is set up by something else, such as
+/// a bare wpa_supplicant and dhcpcd). Say so, instead of "No networks found" while the Wi-Fi is working. Only reads.
+fn unmanaged_wifi_note() -> Option<String> {
+    let out = crate::cmd::output(Command::new("nmcli").args(["-t", "-f", "DEVICE,TYPE,STATE", "device"])).ok()?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let device = text.lines().filter_map(|l| {
+        let mut f = l.split(':');
+        let (dev, ty, state) = (f.next()?, f.next()?, f.next()?);
+        (ty == "wifi" && state == "unmanaged").then(|| dev.to_owned())
+    }).next()?;
+    let up = std::fs::read_to_string(format!("/sys/class/net/{device}/operstate")).is_ok_and(|s| s.trim() == "up");
+    Some(if up { "Connected, but not managed by NetworkManager" } else { "Wi-Fi is not managed by NetworkManager" }.to_string())
 }
 
 fn month_start(offset: i32) -> NaiveDate {

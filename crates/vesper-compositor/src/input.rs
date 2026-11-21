@@ -785,7 +785,8 @@ impl Vesper {
             let x = if after { g.loc.x + g.size.w - w } else { g.loc.x };
             return Some(DropPlan::Beside { target, after, rect: Rectangle::new((x, g.loc.y).into(), (w, g.size.h).into()) });
         }
-        // free space: between the columns on either side of the pointer (or against a screen edge when there is room)
+        // free space: between the columns on either side of the pointer (the strip always starts at the left: no anchoring to
+        // the right or the middle, dropping only reorders)
         let out = self.output_geometry()?;
         let leaders: Vec<smithay::desktop::Window> = {
             let ws = self.layout.ws();
@@ -793,20 +794,10 @@ impl Vesper {
         };
         let geos: Vec<Rectangle<i32, Logical>> = leaders.iter().filter_map(|w| self.space.element_geometry(w)).collect();
         let to = geos.iter().filter(|g| (g.loc.x + g.size.w / 2) as f64 <= pos.x).count();
-        let strip: i32 = geos.iter().map(|g| g.size.w).sum::<i32>() + own.size.w + gap * (geos.len() as i32 + 2);
-        let fits = strip <= out.size.w;
-        let align = if (pos.x - out.loc.x as f64) / out.size.w as f64 > 0.5 { crate::layout::Align::Right } else { crate::layout::Align::Left };
         let w = own.size.w.min(out.size.w / 2).max(60);
-        let x = if fits {
-            match align {
-                crate::layout::Align::Right => out.loc.x + out.size.w - gap - w,
-                _ => out.loc.x + gap,
-            }
-        } else {
-            let boundary = geos.get(to).map(|g| g.loc.x - gap / 2).or_else(|| geos.last().map(|g| g.loc.x + g.size.w + gap / 2)).unwrap_or(out.loc.x + gap);
-            (boundary - w / 2).clamp(out.loc.x, out.loc.x + out.size.w - w)
-        };
-        Some(DropPlan::Column { to, fits, align, rect: Rectangle::new((x, own.loc.y).into(), (w, own.size.h).into()) })
+        let boundary = geos.get(to).map(|g| g.loc.x - gap / 2).or_else(|| geos.last().map(|g| g.loc.x + g.size.w + gap / 2)).unwrap_or(out.loc.x + gap);
+        let x = (boundary - w / 2).clamp(out.loc.x, out.loc.x + out.size.w - w);
+        Some(DropPlan::Column { to, rect: Rectangle::new((x, own.loc.y).into(), (w, own.size.h).into()) })
     }
 
     /// A tiled window was dropped at `pos` (see `plan_drop`).
@@ -820,10 +811,9 @@ impl Vesper {
         match self.plan_drop(window, pos) {
             Some(DropPlan::Stack { target, below, .. }) => self.layout.stack_onto(window, &target, below),
             Some(DropPlan::Beside { target, after, .. }) => self.layout.move_beside(window, &target, after),
-            Some(DropPlan::Column { to, fits, align, .. }) => {
-                if fits {
-                    self.layout.ws_mut().align = align;
-                }
+            Some(DropPlan::Column { to, .. }) => {
+                // a stray anchor from before (the strip pinned right or centred) goes away
+                self.layout.ws_mut().align = crate::layout::Align::Left;
                 self.layout.move_column_to(window, to);
             }
             None => {}
@@ -836,7 +826,7 @@ impl Vesper {
 pub enum DropPlan {
     Stack { target: smithay::desktop::Window, below: bool, rect: smithay::utils::Rectangle<i32, smithay::utils::Logical> },
     Beside { target: smithay::desktop::Window, after: bool, rect: smithay::utils::Rectangle<i32, smithay::utils::Logical> },
-    Column { to: usize, fits: bool, align: crate::layout::Align, rect: smithay::utils::Rectangle<i32, smithay::utils::Logical> },
+    Column { to: usize, rect: smithay::utils::Rectangle<i32, smithay::utils::Logical> },
 }
 
 impl DropPlan {

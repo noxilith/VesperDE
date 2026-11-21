@@ -567,6 +567,15 @@ impl Bar {
         }
     }
 
+    /// Give the popup the keyboard (for the Wi-Fi password) or take it back. A popup normally leaves the keyboard alone, so
+    /// typing goes to the window you were in; the password prompt needs it.
+    fn popup_keyboard(&mut self, on: bool) {
+        if let Some(pw) = self.popup.as_ref() {
+            pw.layer.set_keyboard_interactivity(if on { KeyboardInteractivity::Exclusive } else { KeyboardInteractivity::None });
+            pw.layer.commit();
+        }
+    }
+
     fn redraw_popup(&mut self) {
         let Some(pw) = self.popup.as_mut() else { return };
         if !pw.configured || pw.w == 0 || pw.h == 0 {
@@ -779,6 +788,7 @@ impl Bar {
                     if n.secure && !popup::is_saved(&n.ssid) {
                         // a new secured network needs its password
                         pw.pop.prompt = Some(popup::Prompt { ssid: n.ssid, ..Default::default() });
+                        self.popup_keyboard(true);
                         self.redraw_popup();
                     } else {
                         popup::spawn("nmcli", &["device", "wifi", "connect", &n.ssid]);
@@ -805,6 +815,7 @@ impl Bar {
             Some(popup::PHit::WifiConnect) => self.wifi_submit(),
             Some(popup::PHit::WifiCancel) => {
                 pw.pop.prompt = None;
+                self.popup_keyboard(false);
                 self.redraw_popup();
             }
             Some(popup::PHit::Start(act)) => {
@@ -1215,6 +1226,7 @@ impl Bar {
         let Some(pw) = self.popup.as_mut() else { return };
         if event.keysym == Keysym::Escape {
             if pw.pop.prompt.take().is_some() {
+                self.popup_keyboard(false);
                 self.redraw_popup();
             } else {
                 self.close_popup();

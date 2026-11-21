@@ -117,6 +117,18 @@ impl Vesper {
             if let Some(kb) = self.seat.get_keyboard() {
                 kb.set_focus(self, Some(surface.clone()), SERIAL_COUNTER.next_serial());
             }
+        } else if initial_sent && matches!(layer, Layer::Top | Layer::Overlay) {
+            // A surface can ask for the keyboard later (the bar's popup does, for the Wi-Fi password), and give it back.
+            if let Some(kb) = self.seat.get_keyboard() {
+                let has = kb.current_focus().as_ref() == Some(surface);
+                if interactive && !has {
+                    kb.set_focus(self, Some(surface.clone()), SERIAL_COUNTER.next_serial());
+                } else if !interactive && has {
+                    // (not `focus_window`: it leaves the keyboard alone while a layer surface holds it)
+                    let back = self.layout.focused_window().and_then(|w| w.wl_surface().map(|s| s.into_owned()));
+                    kb.set_focus(self, back, SERIAL_COUNTER.next_serial());
+                }
+            }
         }
 
         // The exclusive zone may have changed, so re-tile.

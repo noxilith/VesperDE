@@ -72,11 +72,14 @@ impl Vesper {
         let _ = loop_handle.insert_source(Generic::new(reader, Interest::READ, Mode::Level), move |_, stream, state| {
             let mut chunk = [0u8; 1024];
             let mut r: &UnixStream = stream;
+            // a short-lived client (the power menu, the screenshot picker) writes its command and closes at once: the data and
+            // the end of the stream arrive together, and the command must still run before we hang up
+            let mut eof = false;
             loop {
                 match r.read(&mut chunk) {
                     Ok(0) => {
-                        state.ipc_drop(id);
-                        return Ok(PostAction::Remove);
+                        eof = true;
+                        break;
                     }
                     Ok(n) => buf.extend_from_slice(&chunk[..n]),
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
@@ -92,6 +95,10 @@ impl Vesper {
                     Ok(cmd) => state.ipc_command(cmd),
                     Err(err) => tracing::warn!("bad ipc command: {err}"),
                 }
+            }
+            if eof {
+                state.ipc_drop(id);
+                return Ok(PostAction::Remove);
             }
             if buf.len() > 64 * 1024 {
                 state.ipc_drop(id);

@@ -200,8 +200,22 @@ fn read_mic() -> Option<bool> {
     }
     // With no microphone at all (no sound card, or its driver or firmware is missing) PipeWire still answers for
     // @DEFAULT_AUDIO_SOURCE@: it names its dummy output, which never shows as muted. That is not a microphone.
-    let info = crate::cmd::output(Command::new("wpctl").args(["inspect", "@DEFAULT_AUDIO_SOURCE@"])).ok()?;
-    if !is_source(&String::from_utf8_lossy(&info.stdout)) {
+    // Every wpctl run is a PipeWire client, and the clients coming and going are changes the volume watcher reports:
+    // an extra run per change keeps the bar's thread so busy that nothing is drawn. So ask only now and then.
+    static LAST: std::sync::Mutex<Option<(Instant, bool)>> = std::sync::Mutex::new(None);
+    let cached = LAST.lock().ok().and_then(|l| *l).filter(|(t, _)| t.elapsed() < Duration::from_secs(30));
+    let real = match cached {
+        Some((_, real)) => real,
+        None => {
+            let info = crate::cmd::output(Command::new("wpctl").args(["inspect", "@DEFAULT_AUDIO_SOURCE@"])).ok()?;
+            let real = is_source(&String::from_utf8_lossy(&info.stdout));
+            if let Ok(mut l) = LAST.lock() {
+                *l = Some((Instant::now(), real));
+            }
+            real
+        }
+    };
+    if !real {
         return None;
     }
     Some(!s.contains("[MUTED]"))

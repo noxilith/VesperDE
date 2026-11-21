@@ -2,6 +2,7 @@
 //! most toolkits honour. GTK 3 does not: Tauri apps (Astralis, flatpak or not) get GTK's own fallback titlebar. That one is
 //! hidden through a block in `~/.config/gtk-3.0/gtk.css`, which only matches GTK's *default* titlebar (`default-decoration`),
 //! never a header bar an app builds itself with its own buttons.
+//! A flatpak app does not read `~/.config`, so the same block goes into each `~/.var/app/<id>/config/gtk-3.0/gtk.css`.
 
 use std::{fs, path::PathBuf};
 
@@ -27,14 +28,28 @@ fn with_block(css: &str, on: bool) -> String {
 pub fn apply(hide: bool) {
     let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else { return };
     let base = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from).unwrap_or_else(|| home.join(".config"));
-    let path = base.join("gtk-3.0").join("gtk.css");
+    apply_in(&base, hide, true);
+    // A flatpak app reads its own config folder (`~/.var/app/<id>/config`), not `~/.config`: give each one the same block.
+    if let Ok(apps) = fs::read_dir(home.join(".var/app")) {
+        for app in apps.flatten() {
+            apply_in(&app.path().join("config"), hide, false);
+        }
+    }
+}
+
+/// The block in `<config>/gtk-3.0/gtk.css`. `create_config`: make `config` itself if it is missing (otherwise it is skipped).
+fn apply_in(config: &std::path::Path, hide: bool, create_config: bool) {
+    if !create_config && !config.is_dir() {
+        return;
+    }
+    let path = config.join("gtk-3.0").join("gtk.css");
     let text = fs::read_to_string(&path).unwrap_or_default();
     let updated = with_block(&text, hide);
     if updated != text {
         if updated.is_empty() {
             let _ = fs::remove_file(&path);
         } else {
-            let _ = fs::create_dir_all(path.parent().unwrap_or(&base));
+            let _ = fs::create_dir_all(path.parent().unwrap_or(config));
             let _ = fs::write(&path, updated);
         }
     }

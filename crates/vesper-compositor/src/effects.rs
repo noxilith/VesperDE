@@ -182,9 +182,19 @@ impl Vesper {
             }
             t < 1.0
         });
+        let moved = !moves.is_empty();
         for (w, p) in moves {
             if !done.contains(&w) {
                 self.space.map_element(w, p, false);
+            }
+        }
+        if moved {
+            // `map_element` puts the window it moves on top of everything, so a column still sliding into place would
+            // cover a dialog that opened meanwhile (a file chooser hid behind its parent until you clicked it). Put the
+            // floating windows and menus back on top, keeping their order.
+            let floats: Vec<Window> = self.space.elements().filter(|w| self.layout.is_floating(w)).cloned().collect();
+            for w in floats.iter().chain(self.or_windows.iter()) {
+                self.space.raise_element(w, false);
             }
         }
         for w in done {

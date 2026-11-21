@@ -31,7 +31,11 @@ impl WlrLayerShellHandler for Vesper {
     ) {
         // a namespace like `vesper-bar@HDMI-A-1` asks for that monitor by name (for clients that cannot look the output up)
         let named = namespace.split_once('@').and_then(|(_, name)| self.space.outputs().find(|o| o.name() == name).cloned());
-        let Some(output) = output.as_ref().and_then(Output::from_resource).or(named).or_else(|| self.focused_output().cloned()) else {
+        // no monitor asked for: the bar, its popups, notifications and the like belong on the main monitor; the launcher,
+        // power menu and other things you call up open where you are (the monitor under the pointer)
+        let follows_focus = matches!(namespace.as_str(), "vesper-launcher" | "vesper-launcher-backdrop" | "vesper-power" | "vesper-switcher" | "vesper-wallpaper-picker" | "vesper-polkit");
+        let fallback = if follows_focus { self.focused_output() } else { self.output() }.cloned();
+        let Some(output) = output.as_ref().and_then(Output::from_resource).or(named).or(fallback) else {
             surface.send_close();
             return;
         };

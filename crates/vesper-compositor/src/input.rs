@@ -781,9 +781,9 @@ impl Vesper {
                 return Some(DropPlan::Stack { target, below, rect });
             }
             let after = rel > 0.5;
-            let w = (g.size.w / 2).min(own.size.w).max(60);
-            let x = if after { g.loc.x + g.size.w - w } else { g.loc.x };
-            return Some(DropPlan::Beside { target, after, rect: Rectangle::new((x, g.loc.y).into(), (w, g.size.h).into()) });
+            // the window becomes a column of its own next to the target: show that column, where it will really be
+            let (x, y, w, h) = self.new_column_rect(own, if after { g.loc.x + g.size.w + gap } else { g.loc.x });
+            return Some(DropPlan::Beside { target, after, rect: Rectangle::new((x, y).into(), (w, h).into()) });
         }
         // free space: between the columns on either side of the pointer (the strip always starts at the left: no anchoring to
         // the right or the middle, dropping only reorders)
@@ -794,10 +794,22 @@ impl Vesper {
         };
         let geos: Vec<Rectangle<i32, Logical>> = leaders.iter().filter_map(|w| self.space.element_geometry(w)).collect();
         let to = geos.iter().filter(|g| (g.loc.x + g.size.w / 2) as f64 <= pos.x).count();
-        let w = own.size.w.min(out.size.w / 2).max(60);
-        let boundary = geos.get(to).map(|g| g.loc.x - gap / 2).or_else(|| geos.last().map(|g| g.loc.x + g.size.w + gap / 2)).unwrap_or(out.loc.x + gap);
-        let x = (boundary - w / 2).clamp(out.loc.x, out.loc.x + out.size.w - w);
-        Some(DropPlan::Column { to, rect: Rectangle::new((x, own.loc.y).into(), (w, own.size.h).into()) })
+        // the dragged column takes the place of the column now at slot `to` (which moves right), or goes after the last one
+        let at = geos.get(to).map(|g| g.loc.x).or_else(|| geos.last().map(|g| g.loc.x + g.size.w + gap)).unwrap_or(out.loc.x + gap);
+        let (x, y, w, h) = self.new_column_rect(own, at);
+        Some(DropPlan::Column { to, rect: Rectangle::new((x, y).into(), (w, h).into()) })
+    }
+
+    /// The box of a window that gets a column of its own at `x`: its own width and the full height of the tiling area,
+    /// kept on the screen. Returns (x, y, w, h).
+    fn new_column_rect(&self, own: smithay::utils::Rectangle<i32, smithay::utils::Logical>, x: i32) -> (i32, i32, i32, i32) {
+        let gap = self.config.layout.gap;
+        let Some(out) = self.focused_output() else { return (x, own.loc.y, own.size.w, own.size.h) };
+        let og = self.space.output_geometry(out).unwrap_or_default();
+        let zone = smithay::desktop::layer_map_for_output(out).non_exclusive_zone();
+        let w = own.size.w.min(og.size.w - 2 * gap).max(60);
+        let x = x.clamp(og.loc.x + gap, (og.loc.x + og.size.w - w - gap).max(og.loc.x + gap));
+        (x, og.loc.y + zone.loc.y + gap, w, crate::layout::column_height(zone.size.h, gap))
     }
 
     /// A tiled window was dropped at `pos` (see `plan_drop`).

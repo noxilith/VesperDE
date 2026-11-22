@@ -181,6 +181,11 @@ pub struct Vesper {
     pub idle_inhibitors: Vec<WlSurface>,
     #[allow(dead_code)] // owns the idle-inhibit global
     pub idle_inhibit_state: IdleInhibitManagerState,
+    /// Games lock the pointer (mouse look) and read relative motion through these two.
+    #[allow(dead_code)] // kept alive: dropping the state removes the global
+    pub pointer_constraints_state: smithay::wayland::pointer_constraints::PointerConstraintsState,
+    #[allow(dead_code)]
+    pub relative_pointer_state: smithay::wayland::relative_pointer::RelativePointerManagerState,
     pub dmabuf_state: DmabufState,
     pub layer_shell_state: WlrLayerShellState,
     #[allow(dead_code)]
@@ -337,6 +342,8 @@ impl Vesper {
             last_activity: Instant::now(),
             idle_inhibitors: Vec::new(),
             idle_inhibit_state: IdleInhibitManagerState::new::<Self>(&display_handle_for_new),
+            pointer_constraints_state: smithay::wayland::pointer_constraints::PointerConstraintsState::new::<Self>(&display_handle_for_new),
+            relative_pointer_state: smithay::wayland::relative_pointer::RelativePointerManagerState::new::<Self>(&display_handle_for_new),
             dmabuf_state: DmabufState::new(),
             layer_shell_state,
             fractional_scale_state: Some(smithay::wayland::fractional_scale::FractionalScaleManagerState::new::<Self>(&display_handle_for_new)),

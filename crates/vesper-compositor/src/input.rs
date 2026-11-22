@@ -123,6 +123,28 @@ impl Vesper {
                     self.drag_to(pos, event.time_msec());
                     return;
                 }
+                // Games ask to lock or confine the pointer (mouse look): they get the relative motion, and a locked pointer stays put.
+                let here = pointer.current_location();
+                let under = self.surface_under(here);
+                let (locked, confined) = self.pointer_constraint_at(&pointer, under.as_ref(), here);
+                pointer.relative_motion(
+                    self,
+                    under.clone(),
+                    &smithay::input::pointer::RelativeMotionEvent {
+                        delta: event.delta(),
+                        delta_unaccel: event.delta_unaccel(),
+                        utime: Event::time(&event),
+                    },
+                );
+                if locked {
+                    pointer.frame(self);
+                    return;
+                }
+                // a confined pointer does not leave its surface
+                if confined && self.surface_under(pos).map(|(s, _)| s) != under.map(|(s, _)| s) {
+                    pointer.frame(self);
+                    return;
+                }
                 self.move_pointer(pos, event.time_msec());
             }
             InputEvent::PointerMotionAbsolute { event } => {
@@ -188,8 +210,10 @@ impl Vesper {
         if self.config.input.focus_follows_mouse && self.drag.is_none() && !self.locked() && !self.keyboard_on_layer() {
             self.focus_under(pos, under.as_ref().is_some_and(|(s, _)| self.is_layer_surface(s)));
         }
-        pointer.motion(self, under, &MotionEvent { location: pos, serial: SERIAL_COUNTER.next_serial(), time });
+        let previous = pointer.current_focus();
+        pointer.motion(self, under.clone(), &MotionEvent { location: pos, serial: SERIAL_COUNTER.next_serial(), time });
         pointer.frame(self);
+        self.constraints_follow_focus(&pointer, previous, under.as_ref(), pos);
     }
 
     /// Focus-follows-mouse: give focus to the window under `pos` (without scrolling the layout).
@@ -989,3 +1013,80 @@ impl Vesper {
         }
     }
 }
+
+use smithay::{
+    input::pointer::PointerHandle,
+    reexports::wayland_server::protocol::wl_surface::WlSurface,
+    utils::{Logical, Point},
+    wayland::pointer_constraints::{with_pointer_constraint, PointerConstraint, PointerConstraintsHandler},
+};
+
+impl Vesper {
+    /// Does the surface under the pointer have an active lock or confinement that applies at `pos`? (locked, confined)
+    fn pointer_constraint_at(
+        &self,
+        pointer: &PointerHandle<Vesper>,
+        under: Option<&(WlSurface, Point<f64, Logical>)>,
+        pos: Point<f64, Logical>,
+    ) -> (bool, bool) {
+        let Some((surface, origin)) = under else { return (false, false) };
+        let mut state = (false, false);
+        with_pointer_constraint(surface, pointer, |constraint| {
+            let Some(c) = constraint.filter(|c| c.is_active()) else { return };
+            // a constraint only applies inside its region
+            if !c.region().is_none_or(|r| r.contains((pos - *origin).to_i32_round())) {
+                return;
+            }
+            match &*c {
+                PointerConstraint::Locked(_) => state.0 = true,
+                PointerConstraint::Confined(_) => state.1 = true,
+            }
+        });
+        state
+    }
+
+    /// A lock or confinement is on while the pointer is over the surface that asked for it: switched on when the pointer
+    /// arrives (inside its region), off when it leaves.
+    fn constraints_follow_focus(
+        &self,
+        pointer: &PointerHandle<Vesper>,
+        previous: Option<WlSurface>,
+        under: Option<&(WlSurface, Point<f64, Logical>)>,
+        pos: Point<f64, Logical>,
+    ) {
+        if let Some(prev) = previous.filter(|p| under.is_none_or(|(s, _)| s != p)) {
+            with_pointer_constraint(&prev, pointer, |c| {
+                if let Some(c) = c.filter(|c| c.is_active()) {
+                    c.deactivate();
+                }
+            });
+        }
+        if let Some((surface, origin)) = under {
+            with_pointer_constraint(surface, pointer, |c| {
+                if let Some(c) = c.filter(|c| !c.is_active()) {
+                    if c.region().is_none_or(|r| r.contains((pos - *origin).to_i32_round())) {
+                        c.activate();
+                    }
+                }
+            });
+        }
+    }
+}
+
+impl PointerConstraintsHandler for Vesper {
+    fn new_constraint(&mut self, surface: &WlSurface, pointer: &PointerHandle<Self>) {
+        // the client asks while the pointer is already over it (a game that grabs the mouse when it starts)
+        if pointer.current_focus().as_ref() == Some(surface) {
+            with_pointer_constraint(surface, pointer, |c| {
+                if let Some(c) = c {
+                    c.activate();
+                }
+            });
+        }
+    }
+
+    fn cursor_position_hint(&mut self, _surface: &WlSurface, _pointer: &PointerHandle<Self>, _location: Point<f64, Logical>) {}
+}
+
+smithay::delegate_pointer_constraints!(Vesper);
+smithay::delegate_relative_pointer!(Vesper);

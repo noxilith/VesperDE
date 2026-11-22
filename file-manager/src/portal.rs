@@ -177,7 +177,7 @@ fn run_dialog(mode: &str, title: &str, parent: &str, app_id: &str, options: &Opt
     filter_args(options, &mut args);
     choice_args(options, &mut args);
 
-    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let exe = crate::exe_path().map_err(|e| e.to_string())?;
     let child = Command::new(exe)
         .args(&args)
         .stdin(Stdio::null())
@@ -288,7 +288,7 @@ struct FileManager;
 
 impl FileManager {
     fn show(uris: &[String]) {
-        let Ok(exe) = std::env::current_exe() else { return };
+        let Ok(exe) = crate::exe_path() else { return };
         // Server addresses are handed on as they are; the new window connects to them
         let targets = uris.iter().filter_map(|u| {
             crate::chooser::from_uri(u).map(PathBuf::into_os_string).or_else(|| crate::fs::network::Address::looks_like(u).then(|| u.into()))

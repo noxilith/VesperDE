@@ -40,7 +40,7 @@ impl Request {
             cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             args,
             tokens: TOKEN_VARS.map(|var| std::env::var(var).unwrap_or_default()),
-            exe: std::env::current_exe().unwrap_or_default(),
+            exe: crate::exe_path().unwrap_or_default(),
             reply: None,
         }
     }
@@ -142,7 +142,7 @@ fn send(path: &Path, request: &Request) -> Option<u8> {
 
 /// Start `file-manager --resident` in a session of its own, so it outlives the terminal or launcher.
 fn start_resident() -> std::io::Result<Child> {
-    let mut command = Command::new(std::env::current_exe()?);
+    let mut command = Command::new(crate::exe_path()?);
     // Out of the launch folder, which may be a drive the user wants to unmount
     command.arg("--resident").current_dir("/").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
     for var in TOKEN_VARS {
@@ -208,7 +208,7 @@ fn listen(listener: UnixListener, path: &Path, showing: &AtomicBool, tx: &mpsc::
         let Some(mut request) = Request::decode(&data) else { continue };
         // Quit once idle when a launch of another build (an update replaced this binary) wants a
         // resident process of its own, or the user turned this off since
-        let other_build = std::env::current_exe().ok().as_deref() != Some(request.exe.as_path());
+        let other_build = crate::exe_path().ok().as_deref() != Some(request.exe.as_path());
         if other_build || !crate::settings::Settings::load().run_in_background {
             if showing.load(Ordering::SeqCst) {
                 let _ = stream.write_all(&[BUSY]);

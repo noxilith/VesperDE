@@ -42,7 +42,7 @@ pub fn available() -> bool {
 /// wrong, and nothing is sent when the person simply dismissed the password prompt.
 pub fn open_folder(dir: &Path) -> io::Result<mpsc::Receiver<io::Error>> {
     let pkexec = pkexec().ok_or_else(|| io::Error::other(crate::i18n::tr("pkexec was not found. Install polkit to use administrator mode")))?;
-    let exe = std::env::current_exe()?;
+    let exe = crate::exe_path()?;
     let mut command = Command::new(pkexec);
     command.arg("env");
     for name in PASS_ENV {

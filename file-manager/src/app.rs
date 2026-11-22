@@ -1589,7 +1589,7 @@ impl FileManagerApp {
             self.open_address(address, password, OpenIn::NewWindow);
             return;
         }
-        let started = std::env::current_exe()
+        let started = crate::exe_path()
             .and_then(|exe| std::process::Command::new(exe).arg(path).spawn());
         if let Err(err) = started {
             self.set_toast(trf("Could not open a new window: {}", &[&err]));
@@ -3610,7 +3610,7 @@ impl FileManagerApp {
         }
         if item.is_dir {
             if self.settings.open_in_new_window && self.chooser.is_none() {
-                let started = std::env::current_exe()
+                let started = crate::exe_path()
                     .and_then(|exe| std::process::Command::new(exe).arg(&item.path).spawn());
                 if let Err(err) = started {
                     self.set_toast(trf("Could not open a new window: {}", &[&err]));

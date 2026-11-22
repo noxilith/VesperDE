@@ -17,6 +17,16 @@ mod wayland_dnd;
 mod wayland_parent;
 mod x11_parent;
 
+/// This program's own path. A long-running copy that was replaced by an update has no file at the path Linux reports
+/// for it (it ends in " (deleted)"): use the path the new version now lives at, so starting dialogs and windows still works.
+pub fn exe_path() -> std::io::Result<std::path::PathBuf> {
+    let exe = std::env::current_exe()?;
+    match exe.to_str().and_then(|s| s.strip_suffix(" (deleted)")) {
+        Some(live) => Ok(std::path::PathBuf::from(live)),
+        None => Ok(exe),
+    }
+}
+
 use std::env;
 use std::path::PathBuf;
 use app::FileManagerApp;
@@ -71,7 +81,7 @@ fn open_window(mut request: instance::Request) -> eframe::Result {
     // Several items dropped on the launcher at once: the first fills this window, each other gets its own
     if chooser.is_none() {
         for extra in args.iter().skip(1).filter(|a| !a.starts_with("--")) {
-            let _ = std::env::current_exe().and_then(|exe| std::process::Command::new(exe).arg(extra).current_dir(&request.cwd).spawn());
+            let _ = crate::exe_path().and_then(|exe| std::process::Command::new(exe).arg(extra).current_dir(&request.cwd).spawn());
         }
     }
     // Tabs to keep beside a folder given on the command line, so that launch does not replace the saved session

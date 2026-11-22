@@ -20,6 +20,8 @@ pub enum Kind {
     Battery,
     Network,
     Drives,
+    /// The menu of a tray icon (right-click).
+    TrayMenu,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -86,6 +88,10 @@ pub enum PHit {
     Net(usize),
     /// The refresh button of the Wi-Fi panel.
     WifiRefresh,
+    /// A line of the tray menu that is showing (index into the level that is open).
+    MenuItem(usize),
+    /// Back from a submenu of the tray menu.
+    MenuBack,
 }
 
 pub type Rect = (i32, i32, i32, i32);
@@ -187,6 +193,9 @@ pub struct Popup {
     pub ptt_key: String,
     /// The Wi-Fi password prompt, when a secured network that is not saved was picked.
     pub prompt: Option<Prompt>,
+    /// The tray icon menu being shown, and the way into it (which submenus are open, as indexes).
+    pub menu: Option<crate::dbus::TrayMenu>,
+    pub menu_path: Vec<usize>,
 }
 
 impl Popup {
@@ -216,6 +225,8 @@ impl Popup {
             ptt: false,
             ptt_key: String::new(),
             prompt: None,
+            menu: None,
+            menu_path: Vec::new(),
         };
         match kind {
             Kind::Volume => {
@@ -243,7 +254,7 @@ impl Popup {
                 p.quick = crate::quick::read(sys);
                 p.night_strength = vesper_config::Config::load().appearance.night_light_strength.clamp(1, 100);
             }
-            Kind::Calendar | Kind::Drives => {}
+            Kind::Calendar | Kind::Drives | Kind::TrayMenu => {}
         }
         p
     }
@@ -1247,6 +1258,7 @@ impl Renderer {
             Kind::Battery => (320, 14 + 32 + 46 + 26 * p.battery_rows.len() as i32 + if p.profiles.is_empty() { 0 } else { 8 + 30 + 38 } + 10),
             Kind::Network => (340, self.side_height(p, Side::Wifi)),
             Kind::Drives => (320, 14 + 32 + 38 * sys.drives.len().max(1) as i32 + 10),
+            Kind::TrayMenu => (260, 14 + Self::menu_height(p) + 10),
         };
         let x = (p.anchor - bw / 2).clamp(8, (w as i32 - bw - 8).max(8));
         let y = 6;
@@ -1525,6 +1537,41 @@ impl Renderer {
                     cy += 38;
                 }
             }
+            Kind::TrayMenu => {
+                if !p.menu_path.is_empty() {
+                    let r = (ix, cy, ix + iw, cy + 30);
+                    button(&mut c, r, false, hover == Some(PHit::MenuBack));
+                    self.text.draw(&mut c, ix + 10, cy + 15, "\u{f0141}  Back", self.pal.on_surface);
+                    p.hits.push((r, PHit::MenuBack));
+                    cy += 34;
+                }
+                // a long menu shows its first lines (there is no scrolling yet)
+                let level: Vec<crate::dbus::MenuEntry> = p.menu_level().iter().take(MENU_MAX_LINES).cloned().collect();
+                for (i, e) in level.iter().enumerate() {
+                    if e.separator {
+                        c.rounded_rect(ix + 6, cy + 4, iw - 12, 1, 0.5, with_alpha(self.pal.on_surface, 0.15));
+                        cy += 10;
+                        continue;
+                    }
+                    let r = (ix, cy, ix + iw, cy + 30);
+                    if e.enabled && hover == Some(PHit::MenuItem(i)) {
+                        button(&mut c, r, false, true);
+                    }
+                    let indent = if e.check.is_some() { 22 } else { 0 };
+                    let col = if e.enabled { self.pal.on_surface } else { muted };
+                    if e.check == Some(true) {
+                        self.text.draw(&mut c, ix + 10, cy + 15, "\u{f012c}", accent);
+                    }
+                    self.text.draw(&mut c, ix + 10 + indent, cy + 15, &self.text.fit(&e.label, iw - 20 - indent - 24), col);
+                    if !e.children.is_empty() {
+                        self.text.draw(&mut c, ix + iw - 24, cy + 15, "\u{f0142}", muted);
+                    }
+                    if e.enabled {
+                        p.hits.push((r, PHit::MenuItem(i)));
+                    }
+                    cy += 32;
+                }
+            }
         }
         if let (Kind::Start, Some(side)) = (p.kind, p.side) {
             self.draw_side(&mut c, p, side, w as i32, hover);
@@ -1683,6 +1730,33 @@ pub fn connect_with_wifi_tool_and_tell(ssid: &str, pass: &str) -> Result<(), Str
     res
 }
 
+
+/// Most lines of a tray menu that are shown.
+const MENU_MAX_LINES: usize = 24;
+
+impl Popup {
+    /// The lines of the tray menu level that is open (the top level, or the submenu that `menu_path` leads into).
+    pub fn menu_level(&self) -> &[crate::dbus::MenuEntry] {
+        let Some(menu) = &self.menu else { return &[] };
+        let mut level: &[crate::dbus::MenuEntry] = &menu.entries;
+        for &i in &self.menu_path {
+            match level.get(i) {
+                Some(entry) => level = &entry.children,
+                None => break,
+            }
+        }
+        level
+    }
+}
+
+impl Renderer {
+    /// Height of the lines of the tray menu that is open.
+    fn menu_height(p: &Popup) -> i32 {
+        let back = if p.menu_path.is_empty() { 0 } else { 34 };
+        let lines: i32 = p.menu_level().iter().take(MENU_MAX_LINES).map(|e| if e.separator { 10 } else { 32 }).sum();
+        back + lines.max(32)
+    }
+}
 /// Does NetworkManager already have a saved connection for this network?
 pub fn is_saved(ssid: &str) -> bool {
     run("nmcli", &["-t", "-f", "NAME", "connection", "show"]).is_some_and(|s| s.lines().any(|l| l.trim() == ssid))

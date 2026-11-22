@@ -11,7 +11,7 @@ use std::{
 use smithay_client_toolkit::reexports::calloop::channel::Sender;
 use zbus::{
     blocking::{fdo::DBusProxy, Connection, Proxy},
-    zvariant::OwnedValue,
+    zvariant::{OwnedValue, Value},
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -39,6 +39,8 @@ pub enum Dbus {
     Bt,
     Media(Option<Media>),
     Tray(Vec<TrayItem>),
+    /// The menu of tray icon number `index` (clicked at `x`) arrived, or it has none (`None`: use the app's own menu).
+    TrayMenu { x: f64, index: usize, menu: Option<TrayMenu> },
     /// The result of joining a Wi-Fi network with a typed password.
     Wifi(Result<(), String>),
     /// A plugin widget's text (empty = hide it).
@@ -208,6 +210,109 @@ fn read_item(conn: &Connection, id: &str) -> Option<TrayItem> {
         theme_path: p.get_property::<String>("IconThemePath").unwrap_or_default(),
         pixmap,
     })
+}
+
+// ---------------------------------------------------------------------------------------------------- tray menu
+
+/// One line of a tray icon's menu (`com.canonical.dbusmenu`).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct MenuEntry {
+    pub id: i32,
+    pub label: String,
+    pub enabled: bool,
+    pub separator: bool,
+    /// A check or radio item: whether it is ticked.
+    pub check: Option<bool>,
+    pub children: Vec<MenuEntry>,
+}
+
+/// A tray icon's menu and where to send a click on one of its lines.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TrayMenu {
+    pub bus: String,
+    pub menu_path: String,
+    pub entries: Vec<MenuEntry>,
+}
+
+fn unwrap_variant<'a, 'b>(mut v: &'b Value<'a>) -> &'b Value<'a> {
+    while let Value::Value(inner) = v {
+        v = inner;
+    }
+    v
+}
+
+/// `Save _As` -> `Save As` (the underscore marks a keyboard shortcut letter; `__` is a real underscore).
+fn strip_mnemonic(label: &str) -> String {
+    let mut out = String::new();
+    let mut chars = label.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '_' {
+            if chars.peek() == Some(&'_') {
+                out.push('_');
+                chars.next();
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// One node of `GetLayout`: `(id, properties, children)`, each child wrapped in a variant. None for a hidden line.
+fn parse_menu_node(v: &Value<'_>) -> Option<MenuEntry> {
+    let Value::Structure(s) = unwrap_variant(v) else { return None };
+    let fields = s.fields();
+    let Value::I32(id) = unwrap_variant(fields.first()?) else { return None };
+    let mut entry = MenuEntry { id: *id, enabled: true, ..Default::default() };
+    let mut visible = true;
+    if let Value::Dict(props) = unwrap_variant(fields.get(1)?) {
+        for (key, val) in props.iter() {
+            let Value::Str(key) = unwrap_variant(key) else { continue };
+            match (key.as_str(), unwrap_variant(val)) {
+                ("label", Value::Str(s)) => entry.label = strip_mnemonic(s.as_str()),
+                ("enabled", Value::Bool(b)) => entry.enabled = *b,
+                ("visible", Value::Bool(b)) => visible = *b,
+                ("type", Value::Str(s)) => entry.separator = s.as_str() == "separator",
+                ("toggle-type", Value::Str(s)) if !s.as_str().is_empty() => entry.check = entry.check.or(Some(false)),
+                ("toggle-state", Value::I32(n)) => entry.check = Some(*n == 1),
+                _ => {}
+            }
+        }
+    }
+    if !visible {
+        return None;
+    }
+    if let Some(Value::Array(children)) = fields.get(2).map(unwrap_variant) {
+        entry.children = children.iter().filter_map(parse_menu_node).collect();
+    }
+    Some(entry)
+}
+
+/// Ask a tray item for its menu. None if it has none (or does not answer): the caller then falls back to the app's own menu.
+/// Blocks on the app, so call it off the UI thread.
+pub fn read_tray_menu(item: &TrayItem) -> Option<TrayMenu> {
+    let conn = Connection::session().ok()?;
+    let sni = Proxy::new(&conn, item.bus.clone(), item.path.clone(), "org.kde.StatusNotifierItem").ok()?;
+    let menu_path = sni.get_property::<zbus::zvariant::OwnedObjectPath>("Menu").ok()?.as_str().to_owned();
+    if menu_path.len() < 2 {
+        return None; // "/" means no menu
+    }
+    let menu = Proxy::new(&conn, item.bus.clone(), menu_path.clone(), "com.canonical.dbusmenu").ok()?;
+    let _: Result<bool, _> = menu.call("AboutToShow", &(0i32,));
+    let (_revision, layout): (u32, (i32, HashMap<String, OwnedValue>, Vec<OwnedValue>)) = menu.call("GetLayout", &(0i32, -1i32, Vec::<String>::new())).ok()?;
+    let entries: Vec<MenuEntry> = layout.2.iter().filter_map(|v| parse_menu_node(v)).collect();
+    (!entries.is_empty()).then_some(TrayMenu { bus: item.bus.clone(), menu_path, entries })
+}
+
+/// Tell the app that line `id` of its menu was clicked.
+pub fn tray_menu_click(bus: String, menu_path: String, id: i32) {
+    std::thread::spawn(move || {
+        if let Ok(conn) = Connection::session() {
+            if let Ok(menu) = Proxy::new(&conn, bus, menu_path, "com.canonical.dbusmenu") {
+                let _: Result<(), _> = menu.call("Event", &(id, "clicked", Value::from(0i32), 0u32));
+            }
+        }
+    });
 }
 
 /// "Activate", "ContextMenu" or "SecondaryActivate" on a tray item, at screen position (x, y).

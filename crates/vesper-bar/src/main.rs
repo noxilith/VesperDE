@@ -291,6 +291,15 @@ fn main() -> Result<()> {
                 match msg {
                     dbus::Dbus::Media(m) => bar.poller.sys.media = m,
                     dbus::Dbus::Tray(t) => bar.poller.sys.tray = t,
+                    dbus::Dbus::TrayMenu { x, index, menu } => match menu {
+                        Some(m) => bar.open_tray_menu(x, m),
+                        // no menu to draw: the app shows its own
+                        None => {
+                            if let Some(t) = bar.poller.sys.tray.get(index) {
+                                dbus::tray_call(t, "ContextMenu", x as i32, bar.height as i32);
+                            }
+                        }
+                    },
                     dbus::Dbus::Bt => bar.redraw_popup(),
                     dbus::Dbus::Plugin(id, text) => {
                         if bar.poller.sys.plugin.get(id) != Some(&text) {
@@ -567,6 +576,15 @@ impl Bar {
         }
     }
 
+    /// Show a tray icon's menu as a popup under the icon at `x`.
+    fn open_tray_menu(&mut self, x: f64, menu: dbus::TrayMenu) {
+        self.close_popup();
+        self.toggle_popup(popup::Kind::TrayMenu, x);
+        if let Some(pw) = self.popup.as_mut() {
+            pw.pop.menu = Some(menu);
+        }
+    }
+
     /// Give the popup the keyboard (for the Wi-Fi password) or take it back. A popup normally leaves the keyboard alone, so
     /// typing goes to the window you were in; the password prompt needs it.
     fn popup_keyboard(&mut self, on: bool) {
@@ -750,6 +768,21 @@ impl Bar {
                 pw.pop.quick.sound = self.poller.sys.volume.is_none_or(|v| !v.muted);
                 self.redraw_popup();
                 self.redraw();
+            }
+            Some(popup::PHit::MenuItem(i)) => {
+                if let Some(entry) = pw.pop.menu_level().get(i).cloned() {
+                    if !entry.children.is_empty() {
+                        pw.pop.menu_path.push(i); // into the submenu
+                        self.redraw_popup();
+                    } else if let Some(menu) = pw.pop.menu.clone() {
+                        dbus::tray_menu_click(menu.bus, menu.menu_path, entry.id);
+                        self.close_popup();
+                    }
+                }
+            }
+            Some(popup::PHit::MenuBack) => {
+                pw.pop.menu_path.pop();
+                self.redraw_popup();
             }
             Some(popup::PHit::Drive(i)) => {
                 if let Some(d) = self.poller.sys.drives.get(i).cloned() {
@@ -1111,8 +1144,13 @@ impl PointerHandler for Bar {
                 PointerEventKind::Press { button: BTN_LEFT, .. } => self.click(e.position.0),
                 PointerEventKind::Press { button: BTN_RIGHT, .. } if matches!(self.hit_at(e.position.0), Some(Hit::Tray(_))) => {
                     if let Some(Hit::Tray(i)) = self.hit_at(e.position.0) {
-                        if let Some(t) = self.poller.sys.tray.get(i) {
-                            dbus::tray_call(t, "ContextMenu", e.position.0 as i32, self.height as i32);
+                        // ask the app for its menu and show it as a popup (the app's own window menu if it has none)
+                        if let Some(t) = self.poller.sys.tray.get(i).cloned() {
+                            let (tx, x) = (self.dbus_tx.clone(), e.position.0);
+                            std::thread::spawn(move || {
+                                let menu = dbus::read_tray_menu(&t);
+                                let _ = tx.send(dbus::Dbus::TrayMenu { x, index: i, menu });
+                            });
                         }
                     }
                 }

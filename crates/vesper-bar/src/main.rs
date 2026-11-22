@@ -785,11 +785,18 @@ impl Bar {
             }
             Some(popup::PHit::Net(i)) => {
                 if let Some(n) = pw.pop.nets.get(i).filter(|n| !n.active).cloned() {
-                    if n.secure && !popup::is_saved(&n.ssid) {
+                    // (with the distro's own Wi-Fi tool every secured network asks: nothing tells us which ones it already knows)
+                    if n.secure && (popup::uses_wifi_tool() || !popup::is_saved(&n.ssid)) {
                         // a new secured network needs its password
                         pw.pop.prompt = Some(popup::Prompt { ssid: n.ssid, ..Default::default() });
                         self.popup_keyboard(true);
                         self.redraw_popup();
+                    } else if popup::uses_wifi_tool() {
+                        let ssid = n.ssid.clone();
+                        std::thread::spawn(move || {
+                            let _ = popup::connect_with_wifi_tool_and_tell(&ssid, "");
+                        });
+                        self.close_popup();
                     } else {
                         popup::spawn("nmcli", &["device", "wifi", "connect", &n.ssid]);
                         self.close_popup();
@@ -1270,6 +1277,11 @@ impl Bar {
         let (ssid, pass) = (pr.ssid.clone(), pr.text.clone());
         let tx = self.dbus_tx.clone();
         std::thread::spawn(move || {
+            if popup::uses_wifi_tool() {
+                // this distro runs Wi-Fi with its own tool, not NetworkManager
+                let _ = tx.send(dbus::Dbus::Wifi(popup::connect_with_wifi_tool_and_tell(&ssid, &pass)));
+                return;
+            }
             let out = std::process::Command::new("nmcli").args(["device", "wifi", "connect", &ssid, "password", &pass]).output();
             let res = match out {
                 Ok(o) if o.status.success() => Ok(()),

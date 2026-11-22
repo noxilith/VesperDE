@@ -1630,6 +1630,55 @@ impl Drop for Popup {
     }
 }
 
+/// SingularitySYS runs Wi-Fi itself (`netwatch`: wpa_supplicant and dhcpcd) and ships a `wifi` command for it. NetworkManager
+/// does not own the adapter there, so asking it to connect fails: use that command instead.
+pub fn uses_wifi_tool() -> bool {
+    std::path::Path::new("/usr/bin/wifi").is_file() && std::path::Path::new("/usr/libexec/singularity/netwatch").is_file()
+}
+
+/// What the root `wifi` tool is handed ends up in wpa_supplicant's configuration file, so a network name or passphrase
+/// with a line break or a quote could add settings of its own. Refuse those.
+fn wifi_tool_input_ok(ssid: &str, pass: &str) -> Result<(), String> {
+    if ssid.is_empty() || ssid.len() > 32 || ssid.chars().any(|c| c.is_control() || c == '"' || c == '\\') {
+        return Err("The Wi-Fi tool cannot take this network name".into());
+    }
+    if !pass.is_empty() && (pass.len() < 8 || pass.len() > 63 || pass.chars().any(char::is_control)) {
+        return Err("A Wi-Fi password is 8 to 63 characters".into());
+    }
+    Ok(())
+}
+
+/// Join `ssid` with the `wifi` command, as root through polkit (the Vesper password dialog asks for your password). An empty
+/// `pass` joins an open network. Waits until it is connected or gave up, so run it off the main thread.
+pub fn connect_with_wifi_tool(ssid: &str, pass: &str) -> Result<(), String> {
+    wifi_tool_input_ok(ssid, pass)?;
+    let out = Command::new("pkexec")
+        .args(["/usr/bin/wifi", "connect", ssid, pass])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|e| format!("pkexec is not installed ({e})"))?;
+    if out.status.success() {
+        return Ok(());
+    }
+    // pkexec itself answers 126 (not authorised or dialog dismissed) and 127 (could not run it)
+    if matches!(out.status.code(), Some(126 | 127)) {
+        return Err("Not allowed: the password prompt was cancelled".into());
+    }
+    let text = format!("{}\n{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    let last = text.lines().map(|l| l.trim().trim_start_matches('.').trim()).filter(|l| !l.is_empty()).last().unwrap_or("");
+    Err(if last.is_empty() { "Could not connect: check the password".to_string() } else { last.chars().take(80).collect() })
+}
+
+/// [`connect_with_wifi_tool`], then say how it went in a notification (the popup may be gone by then).
+pub fn connect_with_wifi_tool_and_tell(ssid: &str, pass: &str) -> Result<(), String> {
+    let res = connect_with_wifi_tool(ssid, pass);
+    match &res {
+        Ok(()) => spawn("vesper-notify", &["send", "Wi-Fi", &format!("Connected to {ssid}")]),
+        Err(e) => spawn("vesper-notify", &["send", "Wi-Fi", &format!("Could not connect to {ssid}: {e}")]),
+    }
+    res
+}
+
 /// Does NetworkManager already have a saved connection for this network?
 pub fn is_saved(ssid: &str) -> bool {
     run("nmcli", &["-t", "-f", "NAME", "connection", "show"]).is_some_and(|s| s.lines().any(|l| l.trim() == ssid))
@@ -1686,4 +1735,21 @@ pub fn rescan_wifi() {
 /// The networks in range, read now.
 pub fn read_wifi_now() -> Result<Vec<Wifi>, String> {
     read_wifi()
+}
+
+#[cfg(test)]
+mod wifi_tool_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_input_that_could_add_settings_to_wpa_supplicant() {
+        assert!(wifi_tool_input_ok("Home", "correct horse").is_ok());
+        assert!(wifi_tool_input_ok("Home", "").is_ok(), "open network");
+        assert!(wifi_tool_input_ok("Ho\"me", "correct horse").is_err());
+        assert!(wifi_tool_input_ok("Home\nssid=x", "correct horse").is_err());
+        assert!(wifi_tool_input_ok("Home", "short").is_err());
+        assert!(wifi_tool_input_ok("Home", "abcdefgh\nproxy_arp=1").is_err());
+        assert!(wifi_tool_input_ok("", "correct horse").is_err());
+        assert!(wifi_tool_input_ok(&"x".repeat(33), "correct horse").is_err());
+    }
 }

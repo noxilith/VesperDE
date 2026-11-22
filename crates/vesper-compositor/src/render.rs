@@ -43,6 +43,17 @@ render_elements! {
     Blur = smithay::backend::renderer::element::texture::TextureRenderElement<smithay::backend::renderer::gles::GlesTexture>,
 }
 
+/// Is a window fullscreen on `output`? It then covers the bars (the top layer): they are neither drawn nor given the pointer.
+pub fn has_fullscreen(space: &Space<Window>, output: &Output) -> bool {
+    use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State;
+    space.elements_for_output(output).filter(|w| crate::layout::on_output(w, &output.name())).any(|w| {
+        if let Some(x) = w.x11_surface() {
+            return x.is_fullscreen() && !x.is_override_redirect();
+        }
+        w.toplevel().is_some_and(|t| t.with_pending_state(|s| s.states.contains(State::Fullscreen)))
+    })
+}
+
 fn layer_elements(renderer: &mut GlesRenderer, output: &Output, layers: &[Layer], out: &mut Vec<Element>) {
     let scale = Scale::from(output.current_scale().fractional_scale());
     let map = layer_map_for_output(output);
@@ -115,7 +126,9 @@ pub fn output_elements(
         }
     }
 
-    layer_elements(renderer, output, &[Layer::Overlay, Layer::Top], &mut elements);
+    // a fullscreen window covers the bar: only what is above everything (launcher, notifications, popups) stays over it
+    let above: &[Layer] = if has_fullscreen(space, output) { &[Layer::Overlay] } else { &[Layer::Overlay, Layer::Top] };
+    layer_elements(renderer, output, above, &mut elements);
     // Windows, topmost first; each window's border sits just under it (so a window above covers the borders below).
     if let Some(out_geo) = space.output_geometry(output) {
         let mut wins: Vec<Window> = space.elements_for_output(output).filter(|w| crate::layout::on_output(w, &output.name())).cloned().collect();

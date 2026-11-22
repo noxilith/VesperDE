@@ -164,7 +164,8 @@ impl Vesper {
             None
         };
 
-        from_layers(&[Layer::Overlay, Layer::Top])
+        let above: &[Layer] = if crate::render::has_fullscreen(&self.space, output) { &[Layer::Overlay] } else { &[Layer::Overlay, Layer::Top] };
+        from_layers(above)
             .or_else(|| {
                 self.window_under(pos).and_then(|(window, loc)| {
                     window

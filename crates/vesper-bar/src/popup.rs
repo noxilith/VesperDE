@@ -1427,7 +1427,7 @@ impl Renderer {
                                 "performance" => "\u{f0e7}",
                                 _ => "\u{f24e}",
                             };
-                            self.text.resized(15.0).draw_centered(&mut c, px + pw3 / 2, cy + 29, glyph, if on { accent } else { self.pal.on_surface });
+                            self.text.resized(15.0).draw_ink_centered(&mut c, px + pw3 / 2, cy + 29, glyph, if on { accent } else { self.pal.on_surface });
                             p.hits.push((r, PHit::Profile(i)));
                             px += pw3 + 6;
                         }

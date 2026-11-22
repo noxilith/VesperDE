@@ -229,12 +229,47 @@ impl Text {
 
     /// Draw `s` with its left edge at `x` and its vertical centre at `mid`.
     pub fn draw(&self, c: &mut Canvas, x: i32, mid: i32, s: &str, color: Rgba) {
+        use ab_glyph::{Font, ScaleFont};
+        let Some(font) = &self.font else { return };
+        let scaled = font.as_scaled(self.scale());
+        let baseline = mid as f32 + (scaled.ascent() + scaled.descent()) / 2.0;
+        self.draw_on_baseline(c, x as f32, baseline, s, color);
+    }
+
+    /// Draw an icon glyph so that what is actually drawn (its ink, not its advance width and line box) is centred on
+    /// (cx, cy). Icon fonts give each glyph its own bearings, so centring by advance leaves some of them off to one side.
+    pub fn draw_ink_centered(&self, c: &mut Canvas, cx: i32, cy: i32, s: &str, color: Rgba) {
         use ab_glyph::{point, Font, ScaleFont};
         let Some(font) = &self.font else { return };
         let scale = self.scale();
         let scaled = font.as_scaled(scale);
-        let baseline = mid as f32 + (scaled.ascent() + scaled.descent()) / 2.0;
-        let mut pen = x as f32;
+        let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+        let mut pen = 0.0;
+        for ch in s.chars() {
+            let id = scaled.glyph_id(ch);
+            if let Some(o) = font.outline_glyph(id.with_scale_and_position(scale, point(pen, 0.0))) {
+                let b = o.px_bounds();
+                x0 = x0.min(b.min.x);
+                y0 = y0.min(b.min.y);
+                x1 = x1.max(b.max.x);
+                y1 = y1.max(b.max.y);
+            }
+            pen += scaled.h_advance(id);
+        }
+        if x0 > x1 {
+            return;
+        }
+        let x = cx as f32 - (x0 + x1) / 2.0;
+        let baseline = cy as f32 - (y0 + y1) / 2.0;
+        self.draw_on_baseline(c, x, baseline, s, color);
+    }
+
+    fn draw_on_baseline(&self, c: &mut Canvas, x: f32, baseline: f32, s: &str, color: Rgba) {
+        use ab_glyph::{point, Font, ScaleFont};
+        let Some(font) = &self.font else { return };
+        let scale = self.scale();
+        let scaled = font.as_scaled(scale);
+        let mut pen = x;
         for ch in s.chars() {
             let id = scaled.glyph_id(ch);
             let glyph = id.with_scale_and_position(scale, point(pen, baseline.round()));

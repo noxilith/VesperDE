@@ -1,0 +1,17 @@
+#!/bin/sh
+# Run as root through sudo (see 51-vesper-greeter-display.sudoers): copies the display scales that the invoking user's
+# session wrote to ~/.cache/vesper/greeter-display.toml into /etc/vesper/greeter-display.toml, which the login screen reads.
+# The login screen runs as another user and cannot read your home folder.
+#
+# The user's file is not trusted: only lines of exactly the two shapes below are kept, whatever else it contains.
+set -e
+case "${SUDO_UID:-}" in '' | *[!0-9]*) exit 1 ;; esac
+home=$(getent passwd "$SUDO_UID" | cut -d: -f6)
+[ -n "$home" ] || exit 1
+src="$home/.cache/vesper/greeter-display.toml"
+[ -f "$src" ] || exit 0
+mkdir -p /etc/vesper
+tmp=$(mktemp /etc/vesper/.greeter-display.XXXXXX)
+grep -E '^(\[display\.outputs\."[A-Za-z0-9_.@:+-]{1,40}"\]|scale = [0-9]+(\.[0-9]+)?)$' "$src" > "$tmp" || true
+chmod 644 "$tmp"
+mv "$tmp" /etc/vesper/greeter-display.toml

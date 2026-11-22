@@ -3,6 +3,7 @@
 //! Lookup order: `$VESPER_CONFIG`, `$XDG_CONFIG_HOME/vesper/config.toml`,
 //! `/etc/vesper/config.toml`, then built-in defaults. Every field is optional.
 
+pub mod greeter_display;
 pub mod keys;
 pub mod plugins;
 pub mod profiles;

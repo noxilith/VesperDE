@@ -63,6 +63,8 @@ install:
 	install -Dm644 packaging/60-vesper-emoji.conf                  $(DESTDIR)/etc/fonts/conf.d/60-vesper-emoji.conf
 	install -Dm644 packaging/49-vesper-power.rules                 $(DESTDIR)/usr/share/polkit-1/rules.d/49-vesper-power.rules
 	install -Dm440 packaging/50-vesper-power.sudoers               $(DESTDIR)/etc/sudoers.d/50-vesper-power
+	install -Dm755 packaging/vesper-sync-greeter-display          $(DESTDIR)$(PREFIX)/libexec/vesper/sync-greeter-display
+	install -Dm440 packaging/51-vesper-greeter-display.sudoers     $(DESTDIR)/etc/sudoers.d/51-vesper-greeter-display
 	install -d $(DESTDIR)$(PREFIX)/share/vesper/cursors
 	cp -a assets/cursors/. $(DESTDIR)$(PREFIX)/share/vesper/cursors/
 
@@ -70,6 +72,7 @@ uninstall:
 	rm -f $(addprefix $(DESTDIR)$(PREFIX)/bin/,$(BINS))
 	rm -f $(DESTDIR)/usr/share/polkit-1/rules.d/49-vesper-power.rules
 	rm -f $(DESTDIR)/etc/sudoers.d/50-vesper-power
+	rm -f $(DESTDIR)/etc/sudoers.d/51-vesper-greeter-display
 	rm -f $(DESTDIR)$(PREFIX)/share/wayland-sessions/vesper.desktop \
 	      $(DESTDIR)$(PREFIX)/share/xdg-desktop-portal/vesper-portals.conf \
 	      $(DESTDIR)$(PREFIX)/share/applications/file-manager.desktop \

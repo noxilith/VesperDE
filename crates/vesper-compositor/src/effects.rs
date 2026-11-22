@@ -314,6 +314,9 @@ impl Vesper {
         let titlebars_was = self.config.appearance.hide_client_titlebars;
         let ptt_was = (self.config.media.ptt, self.config.media.ptt_key.clone());
         self.config = new;
+        if outputs_changed && !self.greeter {
+            vesper_config::greeter_display::publish(&self.config); // the login screen follows the display scale
+        }
         if cursor_was != (self.config.appearance.cursor_theme.clone(), self.config.appearance.cursor_size) {
             let a = &self.config.appearance;
             std::env::set_var("XCURSOR_THEME", &a.cursor_theme);

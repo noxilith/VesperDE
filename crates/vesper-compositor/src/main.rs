@@ -79,7 +79,13 @@ fn main() -> Result<()> {
         std::env::var_os("WAYLAND_DISPLAY").is_some() || std::env::var_os("DISPLAY").is_some()
     });
 
-    let config = vesper_config::Config::load();
+    let mut config = vesper_config::Config::load();
+    if greeter {
+        // the login screen takes the display scales chosen in Settings (copied to /etc by a helper, see vesper-config/greeter_display.rs)
+        vesper_config::greeter_display::apply_to_greeter(&mut config);
+    } else {
+        vesper_config::greeter_display::publish(&config);
+    }
     let mut event_loop: EventLoop<'static, Vesper> = EventLoop::try_new().context("creating event loop")?;
     let display: Display<Vesper> = Display::new().context("creating wayland display")?;
     let seat_name = if nested { "winit" } else { "seat0" };

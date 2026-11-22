@@ -1,0 +1,7 @@
+# Vesper: let members of the wheel group run the helper that copies the display scales from their session to the login screen.
+#
+# The login screen (vesper-greeter) runs as the "greeter" user and reads /etc/vesper, not your home folder. The helper keeps only
+# lines of a fixed shape from your ~/.cache/vesper/greeter-display.toml and takes no arguments. Remove this file and the login
+# screen keeps the scale it last had (or the automatic one).
+Cmnd_Alias VESPER_GREETER_DISPLAY = /usr/libexec/vesper/sync-greeter-display
+%wheel ALL=(root) NOPASSWD: VESPER_GREETER_DISPLAY

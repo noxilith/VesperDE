@@ -1,0 +1,119 @@
+/**
+ * @name Vesper
+ * @description Discord as it is, with the accent colour of your Vesper desktop (the wallpaper colours from matugen).
+ * @author Vesper
+ * @version 1.0.0
+ *
+ * Written by Vesper whenever the wallpaper or the theme changes; do not edit it here, it is rewritten. Turn it on once in
+ * Vesktop under Themes. Change the look of it in Vesper's Settings (Background & colours).
+ */
+
+:root,
+.theme-dark,
+.theme-light,
+.theme-darker,
+.theme-midnight,
+.visual-refresh {
+    --vesper-accent: {{colors.primary.default.hex}};
+    --vesper-on-accent: {{colors.on_primary.default.hex}};
+    --vesper-container: {{colors.primary_container.default.hex}};
+    --vesper-on-container: {{colors.on_primary_container.default.hex}};
+    --vesper-secondary: {{colors.secondary.default.hex}};
+    --vesper-error: {{colors.error.default.hex}};
+
+    /* Discord's brand colour (the blurple) in every shade it uses */
+    --brand-100: color-mix(in srgb, var(--vesper-accent) 12%, white);
+    --brand-200: color-mix(in srgb, var(--vesper-accent) 25%, white);
+    --brand-260: color-mix(in srgb, var(--vesper-accent) 40%, white);
+    --brand-300: color-mix(in srgb, var(--vesper-accent) 55%, white);
+    --brand-345: color-mix(in srgb, var(--vesper-accent) 70%, white);
+    --brand-360: color-mix(in srgb, var(--vesper-accent) 80%, white);
+    --brand-400: color-mix(in srgb, var(--vesper-accent) 90%, white);
+    --brand-430: var(--vesper-accent);
+    --brand-460: var(--vesper-accent);
+    --brand-500: var(--vesper-accent);
+    --brand-530: color-mix(in srgb, var(--vesper-accent) 94%, black);
+    --brand-560: color-mix(in srgb, var(--vesper-accent) 88%, black);
+    --brand-600: color-mix(in srgb, var(--vesper-accent) 78%, black);
+    --brand-630: color-mix(in srgb, var(--vesper-accent) 68%, black);
+    --brand-660: color-mix(in srgb, var(--vesper-accent) 58%, black);
+    --brand-700: color-mix(in srgb, var(--vesper-accent) 46%, black);
+    --brand-730: color-mix(in srgb, var(--vesper-accent) 36%, black);
+    --brand-760: color-mix(in srgb, var(--vesper-accent) 28%, black);
+    --brand-800: color-mix(in srgb, var(--vesper-accent) 20%, black);
+    --brand-830: color-mix(in srgb, var(--vesper-accent) 14%, black);
+    --brand-860: color-mix(in srgb, var(--vesper-accent) 9%, black);
+    --brand-900: color-mix(in srgb, var(--vesper-accent) 5%, black);
+
+    /* the same colour under its older names, and as see-through tints */
+    --brand-experiment: var(--vesper-accent);
+    --brand-experiment-360: var(--brand-360);
+    --brand-experiment-400: var(--brand-400);
+    --brand-experiment-500: var(--vesper-accent);
+    --brand-experiment-560: var(--brand-560);
+    --brand-experiment-600: var(--brand-600);
+    --brand-experiment-630: var(--brand-630);
+    --brand-experiment-05a: color-mix(in srgb, var(--vesper-accent) 5%, transparent);
+    --brand-experiment-10a: color-mix(in srgb, var(--vesper-accent) 10%, transparent);
+    --brand-experiment-15a: color-mix(in srgb, var(--vesper-accent) 15%, transparent);
+    --brand-experiment-20a: color-mix(in srgb, var(--vesper-accent) 20%, transparent);
+    --brand-experiment-25a: color-mix(in srgb, var(--vesper-accent) 25%, transparent);
+    --brand-experiment-30a: color-mix(in srgb, var(--vesper-accent) 30%, transparent);
+    --brand-experiment-35a: color-mix(in srgb, var(--vesper-accent) 35%, transparent);
+    --brand-experiment-40a: color-mix(in srgb, var(--vesper-accent) 40%, transparent);
+    --brand-experiment-45a: color-mix(in srgb, var(--vesper-accent) 45%, transparent);
+    --brand-experiment-50a: color-mix(in srgb, var(--vesper-accent) 50%, transparent);
+    --brand-experiment-55a: color-mix(in srgb, var(--vesper-accent) 55%, transparent);
+    --brand-experiment-60a: color-mix(in srgb, var(--vesper-accent) 60%, transparent);
+    --brand-500-alpha-10: color-mix(in srgb, var(--vesper-accent) 10%, transparent);
+    --brand-500-alpha-20: color-mix(in srgb, var(--vesper-accent) 20%, transparent);
+    --brand-500-alpha-30: color-mix(in srgb, var(--vesper-accent) 30%, transparent);
+
+    /* where Discord uses the brand colour for a job */
+    --text-brand: var(--brand-360);
+    --text-link: var(--brand-345);
+    --focus-primary: var(--vesper-accent);
+    --control-brand-foreground: var(--vesper-accent);
+    --control-brand-foreground-new: var(--vesper-accent);
+    --button-filled-brand-background: var(--vesper-accent);
+    --button-filled-brand-background-hover: var(--brand-560);
+    --button-filled-brand-background-active: var(--brand-600);
+    --button-filled-brand-text: var(--vesper-on-accent);
+    --button-outline-brand-border: var(--vesper-accent);
+    --button-outline-brand-border-hover: var(--brand-560);
+    --button-outline-brand-background-hover: var(--brand-560);
+    --button-outline-brand-background-active: var(--brand-600);
+    --mention-foreground: var(--brand-345);
+    --mention-background: color-mix(in srgb, var(--vesper-accent) 15%, transparent);
+    --mention-foreground-hover: var(--vesper-on-accent);
+    --mention-background-hover: var(--vesper-accent);
+    --background-mentioned: color-mix(in srgb, var(--vesper-accent) 8%, transparent);
+    --background-mentioned-hover: color-mix(in srgb, var(--vesper-accent) 12%, transparent);
+    --message-mentioned-background: color-mix(in srgb, var(--vesper-accent) 8%, transparent);
+    --message-mentioned-hover-background: color-mix(in srgb, var(--vesper-accent) 12%, transparent);
+    --message-mentioned-border: var(--vesper-accent);
+    --info-help-background: color-mix(in srgb, var(--vesper-accent) 10%, transparent);
+    --info-help-foreground: var(--brand-345);
+    --info-help-text: var(--brand-345);
+    --redesign-button-primary-background: var(--vesper-accent);
+    --redesign-button-primary-pressed-background: var(--brand-600);
+    --redesign-button-primary-text: var(--vesper-on-accent);
+    --channels-default: var(--interactive-normal);
+}
+
+/* the text you select */
+::selection {
+    background-color: color-mix(in srgb, var(--vesper-accent) 40%, transparent);
+}
+
+/* places where the blurple is painted straight onto a button or badge */
+[class*="lookFilled"][class*="colorBrand"] {
+    background-color: var(--vesper-accent);
+    color: var(--vesper-on-accent);
+}
+[class*="lookFilled"][class*="colorBrand"]:hover {
+    background-color: var(--brand-560);
+}
+[class*="lookFilled"][class*="colorBrand"]:active {
+    background-color: var(--brand-600);
+}

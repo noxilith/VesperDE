@@ -21,9 +21,10 @@ const FOOT_TEMPLATE: &str = include_str!("foot.template.ini");
 const SHELL_TEMPLATE: &str = include_str!("shell.template.sh");
 const FETCH_TEMPLATE: &str = include_str!("fetch.template");
 const FM_TEMPLATE: &str = include_str!("file-manager.template.json");
+const VESKTOP_TEMPLATE: &str = include_str!("vesktop.template.css");
 
 /// Built-in app templates (switched on and off in the settings), reserved so your own templates cannot clash.
-pub const APP_TEMPLATES: [&str; 5] = ["vesper-kitty", "vesper-foot", "vesper-shell", "vesper-fetch", "vesper-file-manager"];
+pub const APP_TEMPLATES: [&str; 7] = ["vesper-kitty", "vesper-foot", "vesper-shell", "vesper-fetch", "vesper-file-manager", "vesper-vesktop", "vesper-vesktop-native"];
 
 /// The matugen schemes, in the order the settings cycle through them.
 pub const SCHEMES: [&str; 10] = [
@@ -104,11 +105,13 @@ pub struct ThemeSettings {
     pub shelltint: bool,
     /// Colour GTK 3 apps (the keyring password prompt, ...) from the wallpaper, through `~/.config/gtk-3.0/gtk.css`.
     pub gtk: bool,
+    /// Write a Discord theme called "Vesper" for Vesktop (Vencord) with the wallpaper accent colour. Only if Vesktop is installed; you still turn it on in Vesktop under Themes.
+    pub vesktop: bool,
 }
 
 impl Default for ThemeSettings {
     fn default() -> Self {
-        Self { enabled: true, mode: "dark".into(), scheme: "scheme-smart".into(), contrast: 0.0, prefer: "saturation".into(), binary: "matugen".into(), kitty: true, foot: true, shell: true, fetch: true, file_manager: true, shelltint: false, gtk: true }
+        Self { enabled: true, mode: "dark".into(), scheme: "scheme-smart".into(), contrast: 0.0, prefer: "saturation".into(), binary: "matugen".into(), kitty: true, foot: true, shell: true, fetch: true, file_manager: true, shelltint: false, gtk: true, vesktop: true }
     }
 }
 
@@ -240,6 +243,26 @@ pub fn write_templates(user: &[Template]) -> io::Result<()> {
         ));
         if first {
             set_file_manager_theme(true);
+        }
+    }
+    if settings.vesktop {
+        let files = vesktop_theme_files();
+        if !files.is_empty() {
+            write_atomic(&app_template_file("vesktop.theme.css"), VESKTOP_TEMPLATE)?;
+        }
+        for (name, path) in files {
+            if let Some(dir) = path.parent() {
+                let _ = std::fs::create_dir_all(dir);
+            }
+            out.push_str(&format!(
+                "\n[templates.{name}]\ninput_path = {}\noutput_path = {}\n",
+                toml_string(&app_template_file("vesktop.theme.css").to_string_lossy()),
+                toml_string(&path.to_string_lossy()),
+            ));
+        }
+    } else {
+        for (_, path) in vesktop_theme_files() {
+            let _ = std::fs::remove_file(path);
         }
     }
     for t in user.iter().filter(|t| t.name != BUILTIN && !APP_TEMPLATES.contains(&t.name.as_str()) && !t.name.is_empty()) {
@@ -552,6 +575,21 @@ pub fn shell_colors_file() -> PathBuf {
 /// File Manager reads every `*.json` in this folder as a theme; this one is called `vesper`.
 pub fn file_manager_theme_file() -> PathBuf {
     xdg_state().join("file-manager/themes/vesper.json")
+}
+
+/// Where the Vesktop theme goes: the flatpak's folder and a normal install's, each only if that Vesktop has run (has a config
+/// folder). Vesktop lists every `*.theme.css` in its `themes` folder.
+pub fn vesktop_theme_files() -> Vec<(&'static str, PathBuf)> {
+    let mut files = Vec::new();
+    let flatpak = home().join(".var/app/dev.vencord.Vesktop/config/vesktop");
+    if flatpak.is_dir() {
+        files.push(("vesper-vesktop", flatpak.join("themes/vesper.theme.css")));
+    }
+    let native = xdg_config().join("vesktop");
+    if native.is_dir() {
+        files.push(("vesper-vesktop-native", native.join("themes/vesper.theme.css")));
+    }
+    files
 }
 
 fn file_manager_settings_file() -> PathBuf {

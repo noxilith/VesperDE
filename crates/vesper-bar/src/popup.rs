@@ -1410,10 +1410,10 @@ impl Renderer {
                         Some(t) => format!("{status} \u{b7} {t}"),
                         None => status,
                     };
-                    self.text.resized(11.5).draw(&mut c, ix + 46, cy + 40, &self.text.resized(11.0).fit(&sub, iw - 46 - 204), dim);
+                    self.text.resized(11.5).draw(&mut c, ix + 46, cy + 40, &self.text.resized(11.0).fit(&sub, iw - 46 - 140), dim);
                     let n = p.profiles.len() as i32;
                     if n > 0 {
-                        let pw3 = 58;
+                        let pw3 = 36;
                         let mut px = ix + iw - 10 - n * pw3 - (n - 1) * 6;
                         for (i, name) in p.profiles.iter().enumerate() {
                             let on = *name == p.profile;
@@ -1421,13 +1421,13 @@ impl Renderer {
                             let hot = hover == Some(PHit::Profile(i));
                             c.rounded_rect(r.0, r.1, pw3, 30, 9.0, if on { with_alpha(accent, 0.25) } else { with_alpha(self.pal.on_surface, if hot { 0.14 } else { 0.06 }) });
                             c.rounded_outline(r.0, r.1, pw3, 30, 9.0, 1.0, if on { accent } else { line });
-                            let label = match name.as_str() {
-                                "power-saver" => "Saver",
-                                "balanced" => "Balanced",
-                                "performance" => "Perf",
-                                o => o,
+                            // icons: a leaf (saves the most battery), a balance, a bolt (full speed)
+                            let glyph = match name.as_str() {
+                                "power-saver" => "\u{f06c}",
+                                "performance" => "\u{f0e7}",
+                                _ => "\u{f24e}",
                             };
-                            self.text.resized(11.0).draw_centered(&mut c, px + pw3 / 2, cy + 29, label, self.pal.on_surface);
+                            self.text.resized(15.0).draw_centered(&mut c, px + pw3 / 2, cy + 29, glyph, if on { accent } else { self.pal.on_surface });
                             p.hits.push((r, PHit::Profile(i)));
                             px += pw3 + 6;
                         }
@@ -1742,11 +1742,20 @@ fn wifi_tool_input_ok(ssid: &str, pass: &str) -> Result<(), String> {
 /// `pass` joins an open network. Waits until it is connected or gave up, so run it off the main thread.
 pub fn connect_with_wifi_tool(ssid: &str, pass: &str) -> Result<(), String> {
     wifi_tool_input_ok(ssid, pass)?;
-    let out = Command::new("pkexec")
-        .args(["/usr/bin/wifi", "connect", ssid, pass])
-        .stdin(std::process::Stdio::null())
-        .output()
+    // The password goes in on standard input (the tool asks for it there when it is not on the command line): anything on
+    // the command line can be read by every user in `ps`.
+    use std::io::Write;
+    let mut child = Command::new("pkexec")
+        .args(["/usr/bin/wifi", "connect", ssid])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
         .map_err(|e| format!("pkexec is not installed ({e})"))?;
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(format!("{pass}\n").as_bytes()); // an empty line joins an open network
+    }
+    let out = child.wait_with_output().map_err(|e| format!("pkexec failed ({e})"))?;
     if out.status.success() {
         return Ok(());
     }

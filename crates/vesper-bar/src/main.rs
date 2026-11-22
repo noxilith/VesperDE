@@ -1313,6 +1313,7 @@ impl Bar {
         pr.busy = true;
         pr.error = None;
         let (ssid, pass) = (pr.ssid.clone(), pr.text.clone());
+        self.popup_keyboard(false); // the admin password dialog that follows needs the keyboard
         let tx = self.dbus_tx.clone();
         std::thread::spawn(move || {
             if popup::uses_wifi_tool() {

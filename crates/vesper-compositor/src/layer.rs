@@ -122,7 +122,8 @@ impl Vesper {
             // A surface can ask for the keyboard later (the bar's popup does, for the Wi-Fi password), and give it back.
             if let Some(kb) = self.seat.get_keyboard() {
                 let has = kb.current_focus().as_ref() == Some(surface);
-                if interactive && !has {
+                // (not from another layer surface: two that ask for the keyboard would take it from each other at every redraw)
+                if interactive && !has && !self.keyboard_on_layer() {
                     kb.set_focus(self, Some(surface.clone()), SERIAL_COUNTER.next_serial());
                 } else if !interactive && has {
                     // (not `focus_window`: it leaves the keyboard alone while a layer surface holds it)

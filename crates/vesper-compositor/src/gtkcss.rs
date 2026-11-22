@@ -5,7 +5,7 @@
 //!   when an app starts, so open apps keep their colours until restarted.
 //! * **No titlebar** (`appearance.hide_client_titlebars`): Vesper asks every client for server-side decoration (and draws
 //!   none), which most toolkits honour. GTK 3 does not: Tauri apps (Astralis) get GTK's own fallback titlebar. CSS shrinks
-//!   that one (`default-decoration` only, never a header bar an app builds itself), and an empty `gtk-decoration-layout`
+//!   that one (`default-decoration` only, never a header bar an app builds itself), and a `gtk-decoration-layout` with no buttons (`:`)
 //!   takes its buttons away so nothing keeps it tall.
 //!
 //! Both live in one block of `~/.config/gtk-3.0/gtk.css` between markers. A flatpak app reads its own config folder
@@ -25,6 +25,16 @@ const TITLEBAR_CSS: &str = "headerbar.default-decoration, .titlebar.default-deco
 }
 .default-decoration button.titlebutton { min-height: 0; min-width: 0; padding: 0; margin: 0; border: none; }
 headerbar.default-decoration label { min-height: 0; margin: 0; padding: 0; }";
+
+/// Plain rules for the windows and widgets of a dialog, so it takes the colours even where GTK's theme does not build them
+/// from the named colours alone (buttons and entries have gradients and borders of their own).
+const WIDGET_CSS: &str = "window.background, dialog.background, .background { background-color: @theme_bg_color; color: @theme_fg_color; }
+entry, spinbutton { background-image: none; background-color: @theme_base_color; color: @theme_text_color; border-color: @borders; box-shadow: none; }
+entry:focus, spinbutton:focus { border-color: @theme_selected_bg_color; }
+button { background-image: none; background-color: mix(@theme_bg_color, @theme_fg_color, 0.1); color: @theme_fg_color; border-color: @borders; box-shadow: none; text-shadow: none; }
+button:hover { background-color: mix(@theme_bg_color, @theme_fg_color, 0.18); }
+button.suggested-action, button.default { background-color: @theme_selected_bg_color; color: @theme_selected_fg_color; border-color: @theme_selected_bg_color; }
+button.suggested-action:hover, button.default:hover { background-color: shade(@theme_selected_bg_color, 1.1); }";
 
 fn hex(c: [u8; 4]) -> String {
     format!("#{:02x}{:02x}{:02x}", c[0], c[1], c[2])
@@ -68,6 +78,7 @@ fn block_css(hide: bool, palette: Option<&Palette>) -> String {
     let mut parts: Vec<String> = Vec::new();
     if let Some(p) = palette {
         parts.push(colors_css(p));
+        parts.push(WIDGET_CSS.to_string());
     }
     if hide {
         parts.push(TITLEBAR_CSS.to_string());
@@ -139,21 +150,21 @@ fn apply_in(config: &std::path::Path, block: &str, hide: bool, create_config: bo
     write_or_remove(&ini, &text, ini_with_layout(&text, hide), config);
 }
 
-/// `settings.ini` with an empty `gtk-decoration-layout` (no window buttons: the titlebar then has nothing in it to keep it
+/// `settings.ini` with `gtk-decoration-layout=:` (no window buttons: the titlebar then has nothing in it to keep it
 /// tall, and the CSS above shrinks it to nothing) or without it. Off only removes an *empty* layout, which is ours.
 fn ini_with_layout(text: &str, on: bool) -> String {
     let is_layout = |l: &str| l.trim().starts_with("gtk-decoration-layout");
-    let ours = |l: &str| l.split_once('=').is_some_and(|(_, v)| v.trim().is_empty());
+    let ours = |l: &str| l.split_once('=').is_some_and(|(_, v)| v.trim().is_empty() || v.trim() == ":");
     let mut lines: Vec<String> = text.lines().filter(|l| !(is_layout(l) && (on || ours(l)))).map(str::to_owned).collect();
     if on {
         match lines.iter().position(|l| l.trim() == "[Settings]") {
-            Some(i) => lines.insert(i + 1, "gtk-decoration-layout=".into()),
+            Some(i) => lines.insert(i + 1, "gtk-decoration-layout=:".into()),
             None => {
                 if lines.last().is_some_and(|l| !l.is_empty()) {
                     lines.push(String::new());
                 }
                 lines.push("[Settings]".into());
-                lines.push("gtk-decoration-layout=".into());
+                lines.push("gtk-decoration-layout=:".into());
             }
         }
     }
@@ -183,10 +194,10 @@ mod tests {
     #[test]
     fn empty_decoration_layout_is_added_and_removed() {
         let on = ini_with_layout("[Settings]\ngtk-cursor-theme-name=Bibata\n", true);
-        assert!(on.contains("gtk-decoration-layout=\n") && on.contains("gtk-cursor-theme-name=Bibata"));
+        assert!(on.contains("gtk-decoration-layout=:\n") && on.contains("gtk-cursor-theme-name=Bibata"));
         assert_eq!(ini_with_layout(&on, true), on, "applying twice changes nothing");
         assert_eq!(ini_with_layout(&on, false), "[Settings]\ngtk-cursor-theme-name=Bibata\n");
-        assert_eq!(ini_with_layout("", true), "[Settings]\ngtk-decoration-layout=\n");
+        assert_eq!(ini_with_layout("", true), "[Settings]\ngtk-decoration-layout=:\n");
         assert_eq!(ini_with_layout(&ini_with_layout("", true), false), "");
         // a layout the user chose stays when we switch off
         assert_eq!(ini_with_layout("[Settings]\ngtk-decoration-layout=menu:close\n", false), "[Settings]\ngtk-decoration-layout=menu:close\n");
@@ -213,6 +224,7 @@ mod tests {
         let css = block_css(false, Some(&Palette::default()));
         assert!(css.contains("@define-color theme_bg_color #14141a;"));
         assert!(css.contains("@define-color theme_selected_bg_color #8b7bff;"));
+        assert!(css.contains("button.suggested-action"));
         assert!(!css.contains("default-decoration"));
         assert!(block_css(true, None).contains("default-decoration"));
         assert_eq!(block_css(false, None), "");

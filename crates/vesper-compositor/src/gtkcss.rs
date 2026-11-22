@@ -9,9 +9,10 @@ use std::{fs, path::PathBuf};
 const BEGIN: &str = "/* vesper: hide default titlebars (Settings > Appearance) */";
 const END: &str = "/* vesper: end */";
 const CSS: &str = "headerbar.default-decoration, .titlebar.default-decoration {
-    min-height: 0; padding: 0; margin: 0; border: none; box-shadow: none; background: none; font-size: 0;
+    min-height: 0; padding: 0; margin: 0; border: none; box-shadow: none; background: none; font-size: 1px;
 }
-.default-decoration button.titlebutton { min-height: 0; min-width: 0; padding: 0; margin: 0; border: none; }";
+.default-decoration button.titlebutton { min-height: 0; min-width: 0; padding: 0; margin: 0; border: none; }
+headerbar.default-decoration label { min-height: 0; margin: 0; padding: 0; }";
 
 /// The text of `css` with our block set (`on`) or removed. Everything outside the block stays as it is.
 fn with_block(css: &str, on: bool) -> String {
@@ -42,22 +43,67 @@ fn apply_in(config: &std::path::Path, hide: bool, create_config: bool) {
     if !create_config && !config.is_dir() {
         return;
     }
-    let path = config.join("gtk-3.0").join("gtk.css");
-    let text = fs::read_to_string(&path).unwrap_or_default();
-    let updated = with_block(&text, hide);
-    if updated != text {
-        if updated.is_empty() {
-            let _ = fs::remove_file(&path);
-        } else {
-            let _ = fs::create_dir_all(path.parent().unwrap_or(config));
-            let _ = fs::write(&path, updated);
+    let dir = config.join("gtk-3.0");
+    let css = dir.join("gtk.css");
+    let text = fs::read_to_string(&css).unwrap_or_default();
+    write_or_remove(&css, &text, with_block(&text, hide), config);
+    let ini = dir.join("settings.ini");
+    let text = fs::read_to_string(&ini).unwrap_or_default();
+    write_or_remove(&ini, &text, ini_with_layout(&text, hide), config);
+}
+
+/// `settings.ini` with an empty `gtk-decoration-layout` (no window buttons: the titlebar then has nothing in it to keep it
+/// tall, and the CSS above shrinks it to nothing) or without it. Off only removes an *empty* layout, which is ours.
+fn ini_with_layout(text: &str, on: bool) -> String {
+    let is_layout = |l: &str| l.trim().starts_with("gtk-decoration-layout");
+    let ours = |l: &str| l.split_once('=').is_some_and(|(_, v)| v.trim().is_empty());
+    let mut lines: Vec<String> = text.lines().filter(|l| !(is_layout(l) && (on || ours(l)))).map(str::to_owned).collect();
+    if on {
+        match lines.iter().position(|l| l.trim() == "[Settings]") {
+            Some(i) => lines.insert(i + 1, "gtk-decoration-layout=".into()),
+            None => {
+                if lines.last().is_some_and(|l| !l.is_empty()) {
+                    lines.push(String::new());
+                }
+                lines.push("[Settings]".into());
+                lines.push("gtk-decoration-layout=".into());
+            }
         }
+    }
+    if lines.iter().all(|l| l.trim().is_empty() || l.trim() == "[Settings]") {
+        return String::new(); // nothing of the user's left in it
+    }
+    let out = lines.join("\n");
+    out + "\n"
+}
+
+fn write_or_remove(path: &std::path::Path, text: &str, updated: String, config: &std::path::Path) {
+    if updated == text {
+        return;
+    }
+    if updated.is_empty() {
+        let _ = fs::remove_file(path);
+    } else {
+        let _ = fs::create_dir_all(path.parent().unwrap_or(config));
+        let _ = fs::write(path, updated);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn empty_decoration_layout_is_added_and_removed() {
+        let on = ini_with_layout("[Settings]\ngtk-cursor-theme-name=Bibata\n", true);
+        assert!(on.contains("gtk-decoration-layout=\n") && on.contains("gtk-cursor-theme-name=Bibata"));
+        assert_eq!(ini_with_layout(&on, true), on, "applying twice changes nothing");
+        assert_eq!(ini_with_layout(&on, false), "[Settings]\ngtk-cursor-theme-name=Bibata\n");
+        assert_eq!(ini_with_layout("", true), "[Settings]\ngtk-decoration-layout=\n");
+        assert_eq!(ini_with_layout(&ini_with_layout("", true), false), "");
+        // a layout the user chose stays when we switch off
+        assert_eq!(ini_with_layout("[Settings]\ngtk-decoration-layout=menu:close\n", false), "[Settings]\ngtk-decoration-layout=menu:close\n");
+    }
 
     #[test]
     fn block_is_added_replaced_and_removed() {

@@ -102,11 +102,13 @@ pub struct ThemeSettings {
     pub file_manager: bool,
     /// Answer the ShellTint browser extension from Vesper's own palette (the built-in helper, `vesper-shelltint-host`). Off by default.
     pub shelltint: bool,
+    /// Colour GTK 3 apps (the keyring password prompt, ...) from the wallpaper, through `~/.config/gtk-3.0/gtk.css`.
+    pub gtk: bool,
 }
 
 impl Default for ThemeSettings {
     fn default() -> Self {
-        Self { enabled: true, mode: "dark".into(), scheme: "scheme-smart".into(), contrast: 0.0, prefer: "saturation".into(), binary: "matugen".into(), kitty: true, foot: true, shell: true, fetch: true, file_manager: true, shelltint: false }
+        Self { enabled: true, mode: "dark".into(), scheme: "scheme-smart".into(), contrast: 0.0, prefer: "saturation".into(), binary: "matugen".into(), kitty: true, foot: true, shell: true, fetch: true, file_manager: true, shelltint: false, gtk: true }
     }
 }
 

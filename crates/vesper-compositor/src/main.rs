@@ -151,6 +151,7 @@ fn main() -> Result<()> {
             state.idle_tick();
             state.watch_files();
             state.ptt_tick();
+            gtkcss::tick(state.config.appearance.hide_client_titlebars);
             TimeoutAction::ToDuration(Duration::from_secs(1))
         })
         .map_err(|e| anyhow::anyhow!("{e}"))?;

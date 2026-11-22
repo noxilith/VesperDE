@@ -374,6 +374,7 @@ fn power(snap: &Snapshot) -> Vec<Section> {
                 secs_choice(snap, "Suspend after", "Put the computer to sleep when idle", "power.suspend_after", &[0, 300, 600, 900, 1800, 3600, 7200]),
                 toggle(snap, "Lock before sleeping", "Ask for your password when the computer wakes up", "power.lock_before_sleep"),
                 choice(snap, "Closing the lid", "Nothing happens while another monitor is connected", "power.lid_close", vec![(s("lock"), "Lock the screen"), (s("suspend"), "Suspend"), (s("ignore"), "Do nothing")]),
+                toggle(snap, "Power saver while idle or asleep", "Switch to the saver plan when the screen turns off or the laptop sleeps, and back when you return", "power.saver_when_idle"),
                 toggle(snap, "Suspend when the battery is nearly empty", "At 3% and not charging (you are warned at 20%, 10% and 5%)", "power.critical_battery_suspend"),
             ],
         ),

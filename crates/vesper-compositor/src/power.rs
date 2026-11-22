@@ -8,6 +8,7 @@ use crate::state::Vesper;
 impl Vesper {
     /// Lock (when configured) and then suspend.
     pub fn suspend_now(&mut self) {
+        self.power_saver(true);
         if self.config.power.lock_before_sleep {
             self.start_lock();
         }
@@ -22,6 +23,50 @@ impl Vesper {
                 smithay::reexports::calloop::timer::TimeoutAction::Drop
             },
         );
+    }
+
+    /// Switch the power plan to saver while the screens are off or the laptop sleeps, and back to the plan it was on when you
+    /// return. Uses `busctl` (no Python needed); the plan to go back to is kept in a file in the runtime directory.
+    pub fn power_saver(&mut self, on: bool) {
+        if self.saver_active == on || (on && !self.config.power.saver_when_idle) {
+            return;
+        }
+        self.saver_active = on;
+        const SCRIPT: &str = r#"
+f="${XDG_RUNTIME_DIR:-/tmp}/vesper-profile-before"
+call() { # call get|set [plan]
+    for s in "org.freedesktop.UPower.PowerProfiles /org/freedesktop/UPower/PowerProfiles" "net.hadess.PowerProfiles /net/hadess/PowerProfiles"; do
+        set -- "$1" "$2" $s
+        if [ "$1" = get ]; then
+            v=$(busctl --system get-property "$3" "$4" "$3" ActiveProfile 2>/dev/null | cut -d'"' -f2)
+            [ -n "$v" ] && { echo "$v"; return 0; }
+        else
+            busctl --system set-property "$3" "$4" "$3" ActiveProfile s "$2" 2>/dev/null && return 0
+        fi
+    done
+    return 1
+}
+if [ "$1" = on ]; then
+    cur=$(call get)
+    [ -z "$cur" ] && cur=$(powerprofilesctl get 2>/dev/null)
+    if [ -n "$cur" ] && [ "$cur" != power-saver ]; then
+        echo "$cur" > "$f"
+        call set power-saver || powerprofilesctl set power-saver
+    fi
+else
+    if [ -f "$f" ]; then
+        prev=$(cat "$f")
+        call set "$prev" || powerprofilesctl set "$prev"
+        rm -f "$f"
+    fi
+fi
+"#;
+        let _ = std::process::Command::new("sh").args(["-c", SCRIPT, "sh", if on { "on" } else { "off" }]).spawn().map(|mut c| {
+            // reap it without blocking the compositor
+            std::thread::spawn(move || {
+                let _ = c.wait();
+            });
+        });
     }
 
     /// Idle handling for screen-off and suspend (the idle lock lives in `idle_tick`).

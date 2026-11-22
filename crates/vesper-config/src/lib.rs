@@ -735,6 +735,8 @@ pub struct Power {
     pub lid_close: String,
     /// Suspend when the battery is nearly empty (3%) and not charging.
     pub critical_battery_suspend: bool,
+    /// Switch to the power saver plan while the screens are off or the laptop sleeps, and back when you return.
+    pub saver_when_idle: bool,
 }
 
 impl Default for Power {
@@ -749,6 +751,7 @@ impl Default for Power {
             reboot_command: String::new(),
             lid_close: "lock".into(),
             critical_battery_suspend: true,
+            saver_when_idle: true,
         }
     }
 }

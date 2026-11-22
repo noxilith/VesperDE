@@ -73,6 +73,8 @@ pub struct Vesper {
     pub round_tried: bool,
     /// Monitors are powered down by the idle timer.
     pub screens_off: bool,
+    /// The idle or sleep handling switched the power plan to saver (and it is to be put back).
+    pub saver_active: bool,
     /// Push to talk: the key (an xkb keysym) while it is on, whether it is held, and a counter for the first seconds.
     pub ptt_sym: Option<u32>,
     pub ptt_held: bool,
@@ -265,6 +267,7 @@ impl Vesper {
             stats_logged: std::time::Instant::now(),
             round_tried: false,
             screens_off: false,
+            saver_active: false,
             ptt_sym: None,
             ptt_held: false,
             ptt_down_at: None,

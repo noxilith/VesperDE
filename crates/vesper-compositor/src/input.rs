@@ -106,6 +106,9 @@ impl Vesper {
         if self.screens_off {
             self.set_screens_off(false);
         }
+        if self.saver_active {
+            self.power_saver(false);
+        }
         match event {
             InputEvent::Keyboard { event } => self.on_keyboard::<I>(event),
             InputEvent::PointerMotion { event } => {

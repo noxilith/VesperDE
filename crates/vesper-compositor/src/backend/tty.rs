@@ -635,6 +635,7 @@ impl Vesper {
             return false;
         }
         self.screens_off = off;
+        self.power_saver(off);
         let Some(tty) = self.tty.as_mut() else { return false };
         for s in tty.surfaces.values() {
             if let Ok(props) = tty.drm.get_properties(s.connector) {

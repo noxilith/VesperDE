@@ -440,7 +440,28 @@ fn parse_wpctl_streams(text: &str) -> Vec<(String, String)> {
 }
 
 
+/// The system service that switches power profiles: UPower's name, or the older one (the same interface under another name).
+const PROFILE_SERVICES: [(&str, &str); 2] = [
+    ("org.freedesktop.UPower.PowerProfiles", "/org/freedesktop/UPower/PowerProfiles"),
+    ("net.hadess.PowerProfiles", "/net/hadess/PowerProfiles"),
+];
+
+/// The power profiles on offer (`power-saver`, `balanced`, `performance`) and the one in use. Asks power-profiles-daemon on
+/// the system bus directly: `powerprofilesctl` is a Python script, and without Python (some systems have none) it cannot run.
 fn read_profiles() -> (Vec<String>, String) {
+    use zbus::zvariant::OwnedValue;
+    if let Ok(conn) = zbus::blocking::Connection::system() {
+        for (name, path) in PROFILE_SERVICES {
+            let Ok(p) = zbus::blocking::Proxy::new(&conn, name, path, name) else { continue };
+            let Ok(active) = p.get_property::<String>("ActiveProfile") else { continue };
+            let list = p.get_property::<Vec<std::collections::HashMap<String, OwnedValue>>>("Profiles").unwrap_or_default();
+            let mut names: Vec<String> = list.into_iter().filter_map(|m| m.get("Profile").and_then(|v| String::try_from(v.clone()).ok())).collect();
+            names.retain(|n| ["power-saver", "balanced", "performance"].contains(&n.as_str()));
+            if !names.is_empty() {
+                return (names, active);
+            }
+        }
+    }
     let Some(cur) = run("powerprofilesctl", &["get"]) else { return (Vec::new(), String::new()) };
     let list = run("powerprofilesctl", &["list"]).unwrap_or_default();
     let mut names: Vec<String> = list
@@ -453,6 +474,24 @@ fn read_profiles() -> (Vec<String>, String) {
     names.retain(|n| ["power-saver", "balanced", "performance"].contains(&n.as_str()));
     (names, cur.trim().to_string())
 }
+
+/// Switch to power profile `name`, off the UI thread.
+pub fn set_profile(name: &str) {
+    let name = name.to_owned();
+    std::thread::spawn(move || {
+        if let Ok(conn) = zbus::blocking::Connection::system() {
+            for (service, path) in PROFILE_SERVICES {
+                let Ok(p) = zbus::blocking::Proxy::new(&conn, service, path, service) else { continue };
+                if p.set_property("ActiveProfile", name.clone()).is_ok() {
+                    return;
+                }
+            }
+        }
+        // the old way, where it can run
+        let _ = Command::new("powerprofilesctl").args(["set", &name]).output();
+    });
+}
+
 
 /// The details shown in the battery popup, read from sysfs: only the rows the battery can answer.
 fn battery_rows() -> Vec<(String, String)> {
@@ -1371,10 +1410,10 @@ impl Renderer {
                         Some(t) => format!("{status} \u{b7} {t}"),
                         None => status,
                     };
-                    self.text.resized(11.5).draw(&mut c, ix + 46, cy + 40, &self.text.resized(11.0).fit(&sub, iw - 46 - 190), dim);
+                    self.text.resized(11.5).draw(&mut c, ix + 46, cy + 40, &self.text.resized(11.0).fit(&sub, iw - 46 - 204), dim);
                     let n = p.profiles.len() as i32;
                     if n > 0 {
-                        let pw3 = 54;
+                        let pw3 = 58;
                         let mut px = ix + iw - 10 - n * pw3 - (n - 1) * 6;
                         for (i, name) in p.profiles.iter().enumerate() {
                             let on = *name == p.profile;

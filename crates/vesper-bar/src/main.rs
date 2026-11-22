@@ -811,7 +811,7 @@ impl Bar {
             }
             Some(popup::PHit::Profile(i)) => {
                 if let Some(name) = pw.pop.profiles.get(i).cloned() {
-                    popup::spawn("powerprofilesctl", &["set", &name]);
+                    popup::set_profile(&name);
                     pw.pop.profile = name;
                     self.redraw_popup();
                 }

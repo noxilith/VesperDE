@@ -1,0 +1,16 @@
+// Vesper: let members of the wheel group switch the power profile (Saver, Balanced, Performance in the start menu).
+//
+// Vesper is started by a login manager that does not register a logind session (no pam_systemd), so polkit cannot tell that
+// the caller is the person sitting at the machine and answers "Access denied" to power-profiles-daemon's request.
+//
+// Only switching the profile is allowed (not holding one, and not the daemon's settings). Delete the file to go back to
+// polkit's defaults.
+polkit.addRule(function(action, subject) {
+    var allowed = [
+        "org.freedesktop.UPower.PowerProfiles.switch-profile",
+        "net.hadess.PowerProfiles.switch-profile"
+    ];
+    if (allowed.indexOf(action.id) !== -1 && subject.isInGroup("wheel"))
+        return polkit.Result.YES;
+    return polkit.Result.NOT_HANDLED;
+});

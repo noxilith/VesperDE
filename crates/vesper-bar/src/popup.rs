@@ -1720,10 +1720,22 @@ impl Drop for Popup {
     }
 }
 
-/// SingularitySYS runs Wi-Fi itself (`netwatch`: wpa_supplicant and dhcpcd) and ships a `wifi` command for it. NetworkManager
-/// does not own the adapter there, so asking it to connect fails: use that command instead.
+/// SingularitySYS runs Wi-Fi itself (`netwatch`: wpa_supplicant and dhcpcd) and ships a `wifi` command for it. Without
+/// NetworkManager it does not own the adapter, so asking it to connect fails: use that command instead. With the desktop
+/// installed, forge swaps `netwatch` for NetworkManager (the `wifi` command stays installed), and then the network is
+/// NetworkManager's: writing wpa_supplicant's own configuration behind its back would only fight it.
 pub fn uses_wifi_tool() -> bool {
-    std::path::Path::new("/usr/bin/wifi").is_file() && std::path::Path::new("/usr/libexec/singularity/netwatch").is_file()
+    std::path::Path::new("/usr/bin/wifi").is_file()
+        && std::path::Path::new("/usr/libexec/singularity/netwatch").is_file()
+        && !network_manager_running()
+}
+
+/// Is NetworkManager running? (Under systemd it writes no pid file, so look for the process.)
+fn network_manager_running() -> bool {
+    let Ok(dir) = std::fs::read_dir("/proc") else { return false };
+    dir.filter_map(Result::ok)
+        .filter(|e| e.file_name().to_string_lossy().bytes().all(|b| b.is_ascii_digit()))
+        .any(|e| std::fs::read_to_string(e.path().join("comm")).is_ok_and(|c| c.trim() == "NetworkManager"))
 }
 
 /// What the root `wifi` tool is handed ends up in wpa_supplicant's configuration file, so a network name or passphrase

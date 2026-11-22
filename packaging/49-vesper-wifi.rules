@@ -1,0 +1,13 @@
+// Vesper: let members of the wheel group ask NetworkManager to look for Wi-Fi networks again (the refresh button of the
+// Wi-Fi popup, and a scan whenever it opens).
+//
+// Vesper is started by a login manager that does not register a logind session (no pam_systemd), so polkit cannot tell that
+// the caller is the person sitting at the machine and answers "not authorized" to a scan request. The list of networks then
+// stays at whatever NetworkManager last found by itself, and networks in range never show up.
+//
+// Only scanning is allowed: not connecting, and not switching the radio off. Delete the file to go back to polkit's defaults.
+polkit.addRule(function(action, subject) {
+    if (action.id === "org.freedesktop.NetworkManager.wifi.scan" && subject.isInGroup("wheel"))
+        return polkit.Result.YES;
+    return polkit.Result.NOT_HANDLED;
+});

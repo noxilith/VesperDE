@@ -816,8 +816,23 @@ impl Vesper {
         }
     }
 
+    /// Is the default source a real microphone? With no sound card PipeWire still answers for `@DEFAULT_AUDIO_SOURCE@`: it
+    /// names its dummy *output*, and muting that would mute the speakers of the next card that shows up.
+    fn default_source_is_real() -> bool {
+        std::process::Command::new("wpctl")
+            .args(["inspect", "@DEFAULT_AUDIO_SOURCE@"])
+            .stdin(std::process::Stdio::null())
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).lines().any(|l| l.trim_start_matches(['*', ' ']).starts_with("media.class") && l.contains("\"Audio/Source")))
+            .unwrap_or(false)
+    }
+
     /// Mute or unmute the default microphone (waits for it, so a quick press and release stay in order).
     pub fn ptt_set_mic(muted: bool) {
+        if !Self::default_source_is_real() {
+            tracing::debug!("push to talk: no microphone to {}", if muted { "mute" } else { "unmute" });
+            return;
+        }
         let out = std::process::Command::new("wpctl")
             .args(["set-mute", "@DEFAULT_AUDIO_SOURCE@", if muted { "1" } else { "0" }])
             .stdin(std::process::Stdio::null())

@@ -270,6 +270,10 @@ impl Popup {
             return;
         }
         self.side = Some(s);
+        if s == Side::Wifi {
+            // look for networks again in the background: what is listed now is what was found so far, and the refresh button reads the list again
+            spawn("nmcli", &["device", "wifi", "rescan"]);
+        }
         match s {
             Side::Wifi => match read_wifi() {
                 Ok(n) => {
@@ -509,7 +513,7 @@ fn read_wifi() -> Result<Vec<Wifi>, String> {
         }
     }
     nets.sort_by(|a, b| b.active.cmp(&a.active).then(b.signal.cmp(&a.signal)));
-    nets.truncate(10);
+    nets.truncate(16);
     if nets.is_empty() {
         if let Some(note) = unmanaged_wifi_note() {
             return Err(note);
@@ -697,7 +701,7 @@ impl Renderer {
     /// Height of the side panel `side`: title, rows and margins.
     fn side_height(&self, p: &Popup, side: Side) -> i32 {
         if side == Side::Wifi {
-            return if p.prompt.is_some() { 14 + 40 + PROMPT_H + 10 } else { 14 + 40 + 24 + p.nets.len().clamp(1, 10) as i32 * 40 + 10 };
+            return if p.prompt.is_some() { 14 + 40 + PROMPT_H + 10 } else { 14 + 40 + 24 + p.nets.len().clamp(1, 16) as i32 * 40 + 10 };
         }
         if matches!(side, Side::Sound | Side::Volume) {
             let apps = if p.apps.is_empty() { 28 } else { p.apps.len().min(6) as i32 * 46 };

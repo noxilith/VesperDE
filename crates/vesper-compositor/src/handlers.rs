@@ -135,6 +135,27 @@ impl Vesper {
                 }
             }
         }
+        // (its app id may only arrive after the first commit, when the window has already taken a column)
+        struct PromptFloated;
+        if is_keyring_prompt(surface) && !self.layout.is_floating(&window) && window.user_data().insert_if_missing(|| PromptFloated) {
+            if let Some(rect) = self.float_rect_for(surface) {
+                self.layout.float_window(&window, rect);
+                self.layout_changed();
+            }
+        }
+        // A keyring prompt keeps its own size (a GTK dialog does not take ours): once that is known, centre the window with it.
+        struct Recentered;
+        let size = window.geometry().size;
+        if size.w > 0 && size.h > 0 && is_keyring_prompt(surface) && self.layout.is_floating(&window) && window.user_data().insert_if_missing(|| Recentered) {
+            if let Some(out) = self.output_geometry() {
+                let loc = (out.loc.x + (out.size.w - size.w) / 2, out.loc.y + (out.size.h - size.h) / 2);
+                if let Some(rect) = self.layout.float_rect_mut(&window) {
+                    rect.size = size;
+                    rect.loc = loc.into();
+                }
+                self.layout_changed();
+            }
+        }
     }
 
     /// If a freshly mapped toplevel should float (it has a parent, or a fixed size), where to put it.
@@ -154,7 +175,8 @@ impl Vesper {
             return Some(smithay::utils::Rectangle::new(loc.into(), size));
         }
         let fixed = min.w > 0 && min.h > 0 && min == max;
-        if top.parent().is_none() && !fixed {
+        let prompt = app_id.as_deref() == Some("gcr-prompter");
+        if top.parent().is_none() && !fixed && !prompt {
             return None;
         }
         let mut rect = self.default_float_rect();
@@ -167,6 +189,9 @@ impl Vesper {
             .filter(|g| g.size.w > 0 && g.size.h > 0);
         let size: smithay::utils::Size<i32, smithay::utils::Logical> = if fixed {
             min
+        } else if prompt {
+            // the prompt's own size is not known yet: a roomy guess, replaced by its real size after its first commit
+            (560.min(out.size.w), 220.min(out.size.h)).into()
         } else if let Some(g) = parent_geo {
             ((g.size.w * 85 / 100).clamp(480.min(out.size.w), out.size.w), (g.size.h * 85 / 100).clamp(360.min(out.size.h), out.size.h)).into()
         } else {
@@ -469,3 +494,9 @@ smithay::delegate_xdg_activation!(Vesper);
 
 
 smithay::delegate_text_input_manager!(Vesper);
+
+/// The window of the keyring's password prompt (`gcr-prompter`): a small dialog with no parent window, which would otherwise
+/// take a tiled column.
+fn is_keyring_prompt(surface: &WlSurface) -> bool {
+    with_states(surface, |s| s.data_map.get::<XdgToplevelSurfaceData>().and_then(|d| d.lock().unwrap().app_id.clone())).as_deref() == Some("gcr-prompter")
+}

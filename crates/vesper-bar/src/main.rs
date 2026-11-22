@@ -852,6 +852,11 @@ impl Bar {
                 }
                 self.redraw_popup();
             }
+            Some(popup::PHit::WifiOther) => {
+                pw.pop.prompt = Some(popup::Prompt { name_step: true, hidden: true, ..Default::default() });
+                self.popup_keyboard(true);
+                self.redraw_popup();
+            }
             Some(popup::PHit::WifiConnect) => self.wifi_submit(),
             Some(popup::PHit::WifiCancel) => {
                 pw.pop.prompt = None;
@@ -1310,8 +1315,18 @@ impl Bar {
         if pr.busy || pr.text.is_empty() {
             return;
         }
+        // "Other network...": the name comes first, then the password (an empty name never gets here)
+        if pr.name_step {
+            pr.ssid = pr.text.trim().to_string();
+            pr.text.clear();
+            pr.error = None;
+            pr.name_step = false;
+            self.redraw_popup();
+            return;
+        }
         pr.busy = true;
         pr.error = None;
+        let hidden = pr.hidden;
         let (ssid, pass) = (pr.ssid.clone(), pr.text.clone());
         self.popup_keyboard(false); // the admin password dialog that follows needs the keyboard
         let tx = self.dbus_tx.clone();
@@ -1321,14 +1336,21 @@ impl Bar {
                 let _ = tx.send(dbus::Dbus::Wifi(popup::connect_with_wifi_tool_and_tell(&ssid, &pass)));
                 return;
             }
-            let out = std::process::Command::new("nmcli").args(["device", "wifi", "connect", &ssid, "password", &pass]).output();
+            let mut args = vec!["device", "wifi", "connect", &ssid, "password", &pass];
+            if hidden {
+                // not in the scan results (a phone hotspot that is off the list, a network that hides its name): join it by name
+                args.extend(["hidden", "yes"]);
+            }
+            let out = std::process::Command::new("nmcli").args(args).output();
             let res = match out {
                 Ok(o) if o.status.success() => Ok(()),
                 Ok(o) => {
                     // a failed attempt leaves a useless saved connection behind
                     let _ = std::process::Command::new("nmcli").args(["connection", "delete", "id", &ssid]).output();
                     let msg = String::from_utf8_lossy(&o.stderr).to_string();
-                    Err(if msg.contains("Secrets were required") || msg.contains("802-11") || msg.contains("Connection activation failed") {
+                    Err(if msg.contains("Insufficient privileges") || msg.contains("not authorized") || msg.contains("Not authorized") {
+                        "Not allowed to change the network (NetworkManager asked for administrator rights)".to_string()
+                    } else if msg.contains("Secrets were required") || msg.contains("802-11") || msg.contains("Connection activation failed") {
                         "Wrong password, or could not join".to_string()
                     } else {
                         msg.lines().next().unwrap_or("Could not connect").to_string()

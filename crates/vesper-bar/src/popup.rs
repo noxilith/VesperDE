@@ -88,6 +88,8 @@ pub enum PHit {
     Net(usize),
     /// The refresh button of the Wi-Fi panel.
     WifiRefresh,
+    /// "Other network...": join a network by typing its name (a phone hotspot, a hidden network).
+    WifiOther,
     /// A line of the tray menu that is showing (index into the level that is open).
     MenuItem(usize),
     /// Back from a submenu of the tray menu.
@@ -155,6 +157,10 @@ pub struct Prompt {
     pub error: Option<String>,
     /// The connection attempt is running.
     pub busy: bool,
+    /// Asking for the network name first (a phone hotspot or other network that is not in the list); the password follows.
+    pub name_step: bool,
+    /// The network does not broadcast its name: join it by name.
+    pub hidden: bool,
 }
 
 /// Height of the password prompt (title, field, message line, buttons).
@@ -751,7 +757,7 @@ impl Renderer {
     /// Height of the side panel `side`: title, rows and margins.
     fn side_height(&self, p: &Popup, side: Side) -> i32 {
         if side == Side::Wifi {
-            return if p.prompt.is_some() { 14 + 40 + PROMPT_H + 10 } else { 14 + 40 + 24 + p.nets.len().clamp(1, 16) as i32 * 40 + 10 };
+            return if p.prompt.is_some() { 14 + 40 + PROMPT_H + 10 } else { 14 + 40 + 24 + p.nets.len().clamp(1, 16) as i32 * 40 + 40 + 10 };
         }
         if matches!(side, Side::Sound | Side::Volume) {
             let apps = if p.apps.is_empty() { 28 } else { p.apps.len().min(6) as i32 * 46 };
@@ -761,7 +767,7 @@ impl Renderer {
             return 14 + 40 + 40 + 4 + 62 + 2 + 38 + 24 + if p.sources.is_empty() { 30 } else { p.sources.len().min(6) as i32 * 38 } + 10;
         }
         let rows = match side {
-            Side::Wifi => p.nets.len().max(1),
+            Side::Wifi => p.nets.len().max(1) + 1, // (and the "Other network" row)
             Side::Bluetooth | Side::Night | Side::Brightness => 0,
             Side::Sound => p.sinks.len().clamp(1, 6),
             Side::Mic => p.sources.len().clamp(1, 6) + 2, // push to talk and its key
@@ -1065,6 +1071,14 @@ impl Renderer {
             p.hits.push(((ix, cy, ix + iw, cy + 36), PHit::Net(i)));
             cy += 40;
         }
+        // a phone hotspot (or a hidden network) that is not in the list: type its name
+        let other = (ix, cy, ix + iw, cy + 36);
+        if hover == Some(PHit::WifiOther) {
+            c.rounded_rect(ix, cy, iw, 36, 10.0, with_alpha(self.pal.on_surface, 0.12));
+        }
+        self.text.resized(18.0).draw_centered(c, ix + 20, cy + 18, "\u{f0415}", accent);
+        self.text.draw(c, ix + 40, cy + 18, "Other network\u{2026} (phone hotspot)", self.pal.on_surface);
+        p.hits.push((other, PHit::WifiOther));
     }
 
     /// The brightness panel: screen brightness, then the night light switch and its strength.
@@ -1165,11 +1179,13 @@ impl Renderer {
     /// The password prompt for `pr` at (ix, y), `iw` wide. Returns the height used.
     fn draw_prompt(&self, c: &mut Canvas, ix: i32, iw: i32, y: i32, pr: &Prompt, hover: Option<PHit>, hits: &mut Vec<(Rect, PHit)>) -> i32 {
         let accent = self.pal.primary;
-        self.text.draw(c, ix, y + 10, &self.text.fit(&format!("Password for {}", pr.ssid), iw), accent);
+        let title = if pr.name_step { "Network name (a phone hotspot, or one that is hidden)".to_string() } else { format!("Password for {}", pr.ssid) };
+        self.text.draw(c, ix, y + 10, &self.text.fit(&title, iw), accent);
         let field = (ix, y + 24, ix + iw, y + 24 + 34);
         c.rounded_rect(field.0, field.1, iw, 34, 9.0, with_alpha(self.pal.on_surface, 0.10));
         c.rounded_outline(field.0, field.1, iw, 34, 9.0, 1.5, accent);
-        let dots: String = "\u{2022}".repeat(pr.text.chars().count().min(40));
+        // the name is shown as typed, the password as dots
+        let dots: String = if pr.name_step { pr.text.clone() } else { "\u{2022}".repeat(pr.text.chars().count().min(40)) };
         self.text.draw(c, ix + 12, field.1 + 17, &format!("{dots}\u{258f}"), self.pal.on_surface);
         let msg = if pr.busy { Some(("Connecting\u{2026}".to_string(), with_alpha(self.pal.on_surface, 0.6))) } else { pr.error.clone().map(|e| (e, self.pal.error)) };
         if let Some((m, col)) = msg {
@@ -1177,7 +1193,8 @@ impl Renderer {
         }
         let by = y + 24 + 34 + 26;
         let half = (iw - 8) / 2;
-        for (i, (label, hit)) in [("Connect", PHit::WifiConnect), ("Cancel", PHit::WifiCancel)].into_iter().enumerate() {
+        let go = if pr.name_step { "Next" } else { "Connect" };
+        for (i, (label, hit)) in [(go, PHit::WifiConnect), ("Cancel", PHit::WifiCancel)].into_iter().enumerate() {
             let bx = ix + i as i32 * (half + 8);
             let r = (bx, by, bx + half, by + 32);
             let primary = i == 0;
@@ -1653,7 +1670,7 @@ mod tests {
             });
             p.nets = vec![Wifi { ssid: "Home".into(), signal: 82, secure: true, active: true }, Wifi { ssid: "Cafe".into(), signal: 40, secure: false, active: false }];
             if kind == Kind::Network {
-                if std::env::var("VESPER_POPUP_PROMPT").is_ok() { p.prompt = Some(Prompt { ssid: "Home-5G".into(), text: "hunter2".into(), error: Some("Wrong password, or the network could not be joined".into()), busy: false }); }
+                if std::env::var("VESPER_POPUP_PROMPT").is_ok() { p.prompt = Some(Prompt { ssid: "Home-5G".into(), text: "hunter2".into(), error: Some("Wrong password, or the network could not be joined".into()), busy: false, ..Default::default() }); }
             }
             let (pw, ph) = (700u32, 880u32);
             if kind == Kind::Start {

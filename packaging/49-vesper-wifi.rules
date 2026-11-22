@@ -1,13 +1,22 @@
-// Vesper: let members of the wheel group ask NetworkManager to look for Wi-Fi networks again (the refresh button of the
-// Wi-Fi popup, and a scan whenever it opens).
+// Vesper: let members of the wheel group (the administrators) use the network from the bar's Wi-Fi popup: look for
+// networks, join one (a new connection is saved, so it needs `settings.modify.system`), and switch the radio on or off.
 //
 // Vesper is started by a login manager that does not register a logind session (no pam_systemd), so polkit cannot tell that
-// the caller is the person sitting at the machine and answers "not authorized" to a scan request. The list of networks then
-// stays at whatever NetworkManager last found by itself, and networks in range never show up.
+// the caller is the person sitting at the machine. For an unknown session NetworkManager's own policy answers "not
+// authorized" to a scan and "needs a password" to joining a network, and no password dialog can appear because no session
+// has an authentication agent: the list never refreshed, and joining a network with its password just never connected.
 //
-// Only scanning is allowed: not connecting, and not switching the radio off. Delete the file to go back to polkit's defaults.
+// Not given: sharing a connection (hosting a hotspot), changing the host name or the DNS. Delete this file to go back to
+// polkit's defaults.
 polkit.addRule(function(action, subject) {
-    if (action.id === "org.freedesktop.NetworkManager.wifi.scan" && subject.isInGroup("wheel"))
+    var allowed = [
+        "org.freedesktop.NetworkManager.wifi.scan",
+        "org.freedesktop.NetworkManager.network-control",
+        "org.freedesktop.NetworkManager.settings.modify.system",
+        "org.freedesktop.NetworkManager.settings.modify.own",
+        "org.freedesktop.NetworkManager.enable-disable-wifi"
+    ];
+    if (allowed.indexOf(action.id) >= 0 && subject.isInGroup("wheel"))
         return polkit.Result.YES;
     return polkit.Result.NOT_HANDLED;
 });

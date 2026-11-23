@@ -852,6 +852,19 @@ impl Bar {
                 }
                 self.redraw_popup();
             }
+            Some(popup::PHit::Dns(i)) => {
+                if let Some(state) = pw.pop.dns.clone().filter(|s| s.choice != Some(i)) {
+                    // shown as chosen right away; the change itself runs off the UI thread and says if it failed
+                    if let Some(d) = pw.pop.dns.as_mut() {
+                        d.choice = Some(i);
+                    }
+                    std::thread::spawn(move || match popup::set_dns(&state, i) {
+                        Ok(()) => popup::spawn("vesper-notify", &["send", "Wi-Fi", &format!("DNS set to {}", popup::DNS_PRESETS[i].0)]),
+                        Err(e) => popup::spawn("vesper-notify", &["send", "Wi-Fi", &format!("Could not change the DNS: {e}")]),
+                    });
+                    self.redraw_popup();
+                }
+            }
             Some(popup::PHit::WifiOther) => {
                 pw.pop.prompt = Some(popup::Prompt { name_step: true, hidden: true, ..Default::default() });
                 self.popup_keyboard(true);

@@ -90,6 +90,8 @@ pub enum PHit {
     WifiRefresh,
     /// "Other network...": join a network by typing its name (a phone hotspot, a hidden network).
     WifiOther,
+    /// A name server preset of the connected network (index into DNS_PRESETS).
+    Dns(usize),
     /// A line of the tray menu that is showing (index into the level that is open).
     MenuItem(usize),
     /// Back from a submenu of the tray menu.
@@ -178,6 +180,8 @@ pub struct Popup {
     pub profile: String,
     pub nets: Vec<Wifi>,
     pub nets_error: Option<String>,
+    /// The name servers of the connected Wi-Fi network (None: not connected to one).
+    pub dns: Option<DnsState>,
     /// Label and value rows of the battery popup (status, time left, health, power draw, size, cycles).
     pub battery_rows: Vec<(String, String)>,
     /// The output volume and whether it is muted, and the microphone level (set when the popup is drawn or a panel opens).
@@ -215,6 +219,7 @@ impl Popup {
             profile: String::new(),
             nets: Vec::new(),
             nets_error: None,
+            dns: None,
             battery_rows: Vec::new(),
             vol: (0, false),
             mic_percent: 0,
@@ -250,6 +255,7 @@ impl Popup {
                     Ok(n) => p.nets = n,
                     Err(e) => p.nets_error = Some(e),
                 }
+                p.dns = read_dns();
             }
             Kind::Start => {
                 p.quick = crate::quick::read(sys);
@@ -292,16 +298,19 @@ impl Popup {
             spawn("nmcli", &["device", "wifi", "rescan"]);
         }
         match s {
-            Side::Wifi => match read_wifi() {
-                Ok(n) => {
-                    self.nets = n;
-                    self.nets_error = None;
+            Side::Wifi => {
+                self.dns = read_dns();
+                match read_wifi() {
+                    Ok(n) => {
+                        self.nets = n;
+                        self.nets_error = None;
+                    }
+                    Err(e) => {
+                        self.nets.clear();
+                        self.nets_error = Some(e);
+                    }
                 }
-                Err(e) => {
-                    self.nets.clear();
-                    self.nets_error = Some(e);
-                }
-            },
+            }
             Side::Bluetooth => crate::bt::send(crate::bt::Cmd::Scan(true)),
             Side::Sound => {
                 self.sinks = read_sinks();
@@ -757,7 +766,8 @@ impl Renderer {
     /// Height of the side panel `side`: title, rows and margins.
     fn side_height(&self, p: &Popup, side: Side) -> i32 {
         if side == Side::Wifi {
-            return if p.prompt.is_some() { 14 + 40 + PROMPT_H + 10 } else { 14 + 40 + 24 + p.nets.len().clamp(1, 16) as i32 * 40 + 40 + 10 };
+            let dns_h = if p.dns.is_some() { 24 + DNS_PRESETS.len() as i32 * 34 } else { 0 };
+            return if p.prompt.is_some() { 14 + 40 + PROMPT_H + 10 } else { 14 + 40 + 24 + p.nets.len().clamp(1, 16) as i32 * 40 + 40 + dns_h + 10 };
         }
         if matches!(side, Side::Sound | Side::Volume) {
             let apps = if p.apps.is_empty() { 28 } else { p.apps.len().min(6) as i32 * 46 };
@@ -1079,6 +1089,27 @@ impl Renderer {
         self.text.resized(18.0).draw_centered(c, ix + 20, cy + 18, "\u{f0415}", accent);
         self.text.draw(c, ix + 40, cy + 18, "Other network\u{2026} (phone hotspot)", self.pal.on_surface);
         p.hits.push((other, PHit::WifiOther));
+        cy += 40;
+        // the name servers of the connected network: some networks hand out ones that fail, so they can be swapped here
+        if let Some(dns) = p.dns.clone() {
+            cy += self.section_label(c, ix, cy, "DNS");
+            for (i, (label, _, _)) in DNS_PRESETS.iter().enumerate() {
+                let on = dns.choice == Some(i);
+                let hot = hover == Some(PHit::Dns(i));
+                let fill = if on { with_alpha(accent, 0.2) } else if hot { with_alpha(self.pal.on_surface, 0.12) } else { with_alpha(self.pal.on_surface, 0.0) };
+                c.rounded_rect(ix, cy, iw, 30, 9.0, fill);
+                if on {
+                    c.rounded_outline(ix, cy, iw, 30, 9.0, 1.0, with_alpha(accent, 0.5));
+                    self.text.resized(15.0).draw_centered(c, ix + iw - 18, cy + 15, "\u{f012c}", self.pal.on_surface_variant);
+                }
+                self.text.draw(c, ix + 12, cy + 15, &self.text.fit(label, iw - 12 - 36), self.pal.on_surface);
+                p.hits.push(((ix, cy, ix + iw, cy + 30), PHit::Dns(i)));
+                cy += 34;
+            }
+            if dns.choice.is_none() {
+                self.text.draw(c, ix, cy + 6, "Set by hand; pick one to replace it", muted_c);
+            }
+        }
     }
 
     /// The brightness panel: screen brightness, then the night light switch and its strength.
@@ -1890,6 +1921,86 @@ pub fn rescan_wifi() {
 /// The networks in range, read now.
 pub fn read_wifi_now() -> Result<Vec<Wifi>, String> {
     read_wifi()
+}
+
+/// The name servers a network can be set to (Automatic takes the ones the network hands out): label, IPv4, IPv6.
+pub const DNS_PRESETS: [(&str, &[&str], &[&str]); 4] = [
+    ("Automatic (from the network)", &[], &[]),
+    ("Cloudflare  1.1.1.1", &["1.1.1.1", "1.0.0.1"], &["2606:4700:4700::1111", "2606:4700:4700::1001"]),
+    ("Google  8.8.8.8", &["8.8.8.8", "8.8.4.4"], &["2001:4860:4860::8888", "2001:4860:4860::8844"]),
+    ("Quad9  9.9.9.9", &["9.9.9.9", "149.112.112.112"], &["2620:fe::fe", "2620:fe::9"]),
+];
+
+/// The connected Wi-Fi network's name server setting.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DnsState {
+    /// The saved connection (named after the network).
+    pub conn: String,
+    /// The adapter it runs on.
+    pub device: String,
+    /// Which of [`DNS_PRESETS`] is set (None: name servers somebody typed by hand).
+    pub choice: Option<usize>,
+}
+
+/// Which preset a connection's settings are: `ipv4.dns` (comma separated, as nmcli prints it) and whether the network's own are ignored.
+fn dns_choice(dns: &str, ignore_auto: bool) -> Option<usize> {
+    let set: Vec<&str> = dns.split([',', ' ']).map(str::trim).filter(|s| !s.is_empty()).collect();
+    if set.is_empty() && !ignore_auto {
+        return Some(0);
+    }
+    DNS_PRESETS.iter().position(|(_, v4, _)| !v4.is_empty() && ignore_auto && set == *v4)
+}
+
+/// The name servers of the connected Wi-Fi network, when there is one.
+pub fn read_dns() -> Option<DnsState> {
+    let active = run("nmcli", &["-t", "-f", "NAME,TYPE,DEVICE", "connection", "show", "--active"])?;
+    let (conn, device) = active.lines().find_map(|l| {
+        // (a name can hold escaped colons)
+        let l = l.replace("\\:", "\u{1}");
+        let f: Vec<String> = l.split(':').map(|s| s.replace('\u{1}', ":")).collect();
+        (f.len() >= 3 && f[1] == "802-11-wireless").then(|| (f[0].clone(), f[2].clone()))
+    })?;
+    let out = run("nmcli", &["-g", "ipv4.dns,ipv4.ignore-auto-dns", "connection", "show", "id", &conn])?;
+    let mut lines = out.lines();
+    let dns = lines.next().unwrap_or("");
+    let ignore = lines.next().is_some_and(|s| s.trim() == "yes");
+    Some(DnsState { conn, device, choice: dns_choice(dns, ignore) })
+}
+
+/// Set the connection's name servers to preset `choice` and apply them to the running connection (no reconnect).
+pub fn set_dns(state: &DnsState, choice: usize) -> Result<(), String> {
+    let (_, v4, v6) = DNS_PRESETS.get(choice).ok_or("No such DNS choice")?;
+    let (v4, v6) = (v4.join(" "), v6.join(" "));
+    let ignore = if choice == 0 { "no" } else { "yes" };
+    let out = crate::cmd::output(Command::new("nmcli").args([
+        "connection", "modify", "id", &state.conn, "ipv4.dns", &v4, "ipv4.ignore-auto-dns", ignore, "ipv6.dns", &v6, "ipv6.ignore-auto-dns", ignore,
+    ]))
+    .map_err(|e| format!("nmcli failed ({e})"))?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).lines().next().unwrap_or("Could not change the DNS").to_string());
+    }
+    // apply it now: the running connection takes the new servers without dropping
+    let out = crate::cmd::output(Command::new("nmcli").args(["device", "reapply", &state.device])).map_err(|e| format!("nmcli failed ({e})"))?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&out.stderr).lines().next().unwrap_or("Could not apply the DNS").to_string())
+    }
+}
+
+#[cfg(test)]
+mod dns_tests {
+    use super::*;
+
+    #[test]
+    fn a_connections_settings_are_matched_to_a_preset() {
+        assert_eq!(dns_choice("", false), Some(0), "nothing typed, the network's own: automatic");
+        assert_eq!(dns_choice("1.1.1.1,1.0.0.1", true), Some(1));
+        assert_eq!(dns_choice("8.8.8.8, 8.8.4.4", true), Some(2));
+        assert_eq!(dns_choice("9.9.9.9 149.112.112.112", true), Some(3));
+        assert_eq!(dns_choice("10.0.0.1", true), None, "set by hand");
+        assert_eq!(dns_choice("1.1.1.1,1.0.0.1", false), None, "listed, but the network's own still come first");
+    }
 }
 
 #[cfg(test)]

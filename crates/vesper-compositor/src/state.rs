@@ -596,6 +596,15 @@ impl Vesper {
                 }
             }
         }
+        // Every X11 window stays mapped in the X server, including those on other workspaces, and the tiles of different
+        // workspaces sit on the same spot. The X server hands the pointer and the keyboard to whichever of them is on top
+        // of its own stack, so the focused one has to be on top there too, or an invisible window (a Godot editor on
+        // another workspace) answers for the visible one (Blender) and the visible one gets no clicks and no keys.
+        if let (Some(x11), Some(xwm)) = (window.as_ref().and_then(|w| w.x11_surface()), self.xwm.as_mut()) {
+            if let Err(err) = xwm.raise_window(x11) {
+                tracing::warn!("could not raise an X11 window: {err}");
+            }
+        }
         let surface = window.as_ref().and_then(|w| w.wl_surface()).map(|s| s.into_owned());
         // an open launcher keeps the keyboard until it closes, even if a window maps or closes behind it
         if self.keyboard_on_layer() {
